@@ -126,6 +126,21 @@ impl<T: ByteStore> Buffers<T> {
         self.count == 0
     }
 
+    /// Get the stored offset for a given index
+    fn get_offset(&self, index: usize) -> Option<usize> {
+        if index >= self.count {
+            return None;
+        }
+
+        let buffer = self.buffer.as_ref();
+        let offset_size = size_of::<usize>();
+        let offset_pos = index * offset_size;
+        let offset_bytes: [u8; 8] = buffer[offset_pos..offset_pos + offset_size]
+            .try_into()
+            .ok()?;
+        Some(usize::from_le_bytes(offset_bytes))
+    }
+
     /// Get a reference to the data at the given index
     pub fn get(&self, index: usize) -> Option<&[u8]> {
         if index >= self.count {
@@ -133,14 +148,7 @@ impl<T: ByteStore> Buffers<T> {
         }
 
         let buffer = self.buffer.as_ref();
-        let offset_size = size_of::<usize>();
-
-        // Read the offset
-        let offset_pos = index * offset_size;
-        let offset_bytes: [u8; 8] = buffer[offset_pos..offset_pos + offset_size]
-            .try_into()
-            .ok()?;
-        let start_offset = usize::from_le_bytes(offset_bytes);
+        let start_offset = self.get_offset(index)?;
 
         // Calculate the end offset
         // Data is stored in reverse order, so:
@@ -152,11 +160,7 @@ impl<T: ByteStore> Buffers<T> {
             buffer.len()
         } else {
             // Get the start of the previously stored entry (index - 1)
-            let prev_offset_pos = (index - 1) * offset_size;
-            let prev_offset_bytes: [u8; 8] = buffer[prev_offset_pos..prev_offset_pos + offset_size]
-                .try_into()
-                .ok()?;
-            usize::from_le_bytes(prev_offset_bytes)
+            self.get_offset(index - 1)?
         };
 
         if start_offset > end_offset || end_offset > buffer.len() {
@@ -418,5 +422,131 @@ mod tests {
         assert_eq!(idx1, 0);
         assert_eq!(idx2, 1);
         assert_eq!(idx3, 2);
+    }
+
+    #[test]
+    fn test_offset_system_understanding() {
+        let mut store = Buffers::new(vec![0u8; 64]);
+
+        // Add some data to understand how offsets work
+        let data1 = b"hello"; // 5 bytes
+        let data2 = b"world"; // 5 bytes
+        let data3 = b"rust"; // 4 bytes
+
+        let idx1 = store.append(data1);
+        let idx2 = store.append(data2);
+        let idx3 = store.append(data3);
+
+        // Check offsets - these are absolute positions from start of buffer
+        let offset1 = store.get_offset(idx1).unwrap();
+        let offset2 = store.get_offset(idx2).unwrap();
+        let offset3 = store.get_offset(idx3).unwrap();
+
+        // Verify the data layout
+        assert_eq!(store.get(idx1).unwrap(), data1);
+        assert_eq!(store.get(idx2).unwrap(), data2);
+        assert_eq!(store.get(idx3).unwrap(), data3);
+
+        // Current system: offsets are absolute positions where data STARTS
+        // Data layout: [offset_0][offset_1][offset_2][free_space][data_2][data_1][data_0]
+        // So offset_0 points to where data_0 starts (near the end)
+        // offset_1 points to where data_1 starts (before data_0)
+        // offset_2 points to where data_2 starts (before data_1)
+
+        // The offsets should be in descending order since data grows backwards
+        assert!(offset3 < offset2);
+        assert!(offset2 < offset1);
+    }
+
+    #[test]
+    fn test_offset_system_with_growth() {
+        let mut store = Buffers::new(vec![0u8; 32]);
+
+        // Add data that will trigger growth
+        let data1 = b"first";
+        let data2 = b"second";
+
+        let idx1 = store.append(data1);
+        let offset1_before = store.get_offset(idx1).unwrap();
+
+        let idx2 = store.append(data2);
+        let offset2_before = store.get_offset(idx2).unwrap();
+
+        // This should trigger growth
+        let data3 = b"this_will_trigger_growth_because_its_long";
+        let idx3 = store.append(data3);
+
+        let offset1_after = store.get_offset(idx1).unwrap();
+        let offset2_after = store.get_offset(idx2).unwrap();
+        let offset3_after = store.get_offset(idx3).unwrap();
+
+        // Verify data is still correct
+        assert_eq!(store.get(idx1).unwrap(), data1);
+        assert_eq!(store.get(idx2).unwrap(), data2);
+        assert_eq!(store.get(idx3).unwrap(), data3);
+
+        // The offsets should have been updated when buffer grew
+        // Because the data was moved to maintain the layout
+        assert!(offset1_after > offset1_before); // Moved to higher position
+        assert!(offset2_after > offset2_before); // Moved to higher position
+
+        // Data still grows backwards from end
+        assert!(offset3_after < offset2_after);
+        assert!(offset2_after < offset1_after);
+    }
+
+    #[test]
+    fn test_detailed_offset_analysis() {
+        // This test demonstrates the CURRENT system vs what you expected
+        let mut store = Buffers::new(vec![0u8; 32]);
+
+        // Add first piece of data
+        let data1 = b"AAAA"; // 4 bytes
+        let idx1 = store.append(data1);
+        let offset1 = store.get_offset(idx1).unwrap();
+
+        // Current system: offset points to ABSOLUTE position where data starts
+        // With 32-byte buffer and 4-byte data:
+        // Layout: [8-byte offset][24 bytes free][4 bytes data]
+        // offset1 should be 28 (absolute position from start)
+        assert_eq!(offset1, 28); // Points to position 28 in buffer
+        assert_eq!(store.data_end, 28); // data_end tracks where next data goes
+
+        // Add second piece of data
+        let data2 = b"BBBB"; // 4 bytes
+        let idx2 = store.append(data2);
+        let offset2 = store.get_offset(idx2).unwrap();
+
+        // Now layout: [8-byte offset1][8-byte offset2][16 bytes free][4 bytes data2][4 bytes data1]
+        // offset2 should be 24 (absolute position)
+        assert_eq!(offset2, 24);
+        assert_eq!(store.data_end, 24);
+
+        // YOUR EXPECTED SYSTEM would be:
+        // - Offsets relative to end: [4, 8] (lengths from end)
+        // - When buffer grows, only data moves, offsets stay the same
+        // - Much simpler!
+
+        // CURRENT SYSTEM requires updating offsets when buffer grows because:
+        // - Offsets are absolute positions
+        // - When data moves, absolute positions change
+        // - So we have to recalculate all offsets
+
+        // Force growth by adding data that won't fit
+        let large_data = vec![b'X'; 20]; // This should trigger growth
+        let idx3 = store.append(&large_data);
+
+        // After growth, the original offsets should have changed
+        let offset1_after = store.get_offset(idx1).unwrap();
+        let offset2_after = store.get_offset(idx2).unwrap();
+
+        // Offsets moved because data was copied to new positions
+        assert!(offset1_after > offset1); // Moved to higher position
+        assert!(offset2_after > offset2); // Moved to higher position
+
+        // But data is still retrievable correctly
+        assert_eq!(store.get(idx1).unwrap(), data1);
+        assert_eq!(store.get(idx2).unwrap(), data2);
+        assert_eq!(store.get(idx3).unwrap(), &large_data);
     }
 }
