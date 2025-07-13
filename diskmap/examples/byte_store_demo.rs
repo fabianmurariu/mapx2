@@ -1,4 +1,4 @@
-use diskmap::ByteStore;
+use diskmap::Buffers;
 use std::collections::HashMap;
 
 fn main() {
@@ -22,7 +22,7 @@ fn main() {
 
 fn demo_with_vec() {
     println!("1. Demo with Vec<u8> backing:");
-    let mut store = ByteStore::new(vec![0u8; 256]);
+    let mut store = Buffers::new(vec![0u8; 256]);
 
     let texts = ["Hello", "World", "Rust", "ByteStore"];
     let mut indices = Vec::new();
@@ -32,9 +32,9 @@ fn demo_with_vec() {
         match store.append(text.as_bytes()) {
             Some(idx) => {
                 indices.push(idx);
-                println!("   Stored '{}' at index {}", text, idx);
+                println!("   Stored '{text}' at index {idx}");
             }
-            None => println!("   Failed to store '{}'", text),
+            None => println!("   Failed to store '{text}'"),
         }
     }
 
@@ -53,7 +53,7 @@ fn demo_with_vec() {
 
 fn demo_with_array() {
     println!("2. Demo with fixed array [u8; 128]:");
-    let mut store = ByteStore::new([0u8; 128]);
+    let mut store = Buffers::new([0u8; 128]);
 
     // Store binary data
     let binary_data = [
@@ -87,7 +87,7 @@ fn demo_with_array() {
 fn demo_with_boxed_slice() {
     println!("3. Demo with Box<[u8]>:");
     let backing = vec![0u8; 512].into_boxed_slice();
-    let mut store = ByteStore::new(backing);
+    let mut store = Buffers::new(backing);
 
     // Store varying size data
     for size in [1, 10, 50, 100, 200] {
@@ -111,7 +111,7 @@ fn demo_with_boxed_slice() {
 
 fn demo_capacity_limits() {
     println!("4. Capacity limits demo:");
-    let mut store = ByteStore::new(vec![0u8; 64]); // Small buffer
+    let mut store = Buffers::new(vec![0u8; 64]); // Small buffer
 
     let mut count = 0;
     loop {
@@ -150,14 +150,14 @@ fn demo_kv_store() {
 
     // Build a simple KV store using ByteStore + HashMap
     struct SimpleKV {
-        store: ByteStore<Vec<u8>>,
+        store: Buffers<Vec<u8>>,
         index: HashMap<String, usize>,
     }
 
     impl SimpleKV {
         fn new(capacity: usize) -> Self {
             Self {
-                store: ByteStore::new(vec![0u8; capacity]),
+                store: Buffers::new(vec![0u8; capacity]),
                 index: HashMap::new(),
             }
         }
