@@ -1,3 +1,4 @@
+use crate::byte_store::ByteStore;
 use std::mem::size_of;
 
 /// A slotted byte store that stores offsets at the beginning and data at the end.
@@ -10,20 +11,20 @@ use std::mem::size_of;
 /// # Example
 ///
 /// ```
-/// use diskmap::ByteStore;
+/// use diskmap::Buffers;
 ///
-/// let mut store = ByteStore::new(vec![0u8; 1024]);
+/// let mut store = Buffers::new(vec![0u8; 1024]);
 ///
 /// // Add some data
-/// let idx1 = store.append(b"hello").unwrap();
-/// let idx2 = store.append(b"world").unwrap();
+/// let idx1 = store.append(b"hello");
+/// let idx2 = store.append(b"world");
 ///
 /// // Retrieve data
 /// assert_eq!(store.get(idx1).unwrap(), b"hello");
 /// assert_eq!(store.get(idx2).unwrap(), b"world");
 /// assert_eq!(store.len(), 2);
 /// ```
-pub struct Buffers<T: AsMut<[u8]>> {
+pub struct Buffers<T: ByteStore> {
     buffer: T,
     /// Number of slots (entries) currently stored
     count: usize,
@@ -31,7 +32,7 @@ pub struct Buffers<T: AsMut<[u8]>> {
     data_end: usize,
 }
 
-impl<T: AsMut<[u8]> + AsRef<[u8]>> Buffers<T> {
+impl<T: ByteStore> Buffers<T> {
     /// Create a new ByteStore with the given buffer
     pub fn new(buffer: T) -> Self {
         let data_end = buffer.as_ref().len();
@@ -43,14 +44,56 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> Buffers<T> {
     }
 
     /// Append a byte slice to the store, returning the index of the stored data
-    pub fn append(&mut self, bytes: &[u8]) -> Option<usize> {
+    pub fn append(&mut self, bytes: &[u8]) -> usize {
         let offset_size = size_of::<usize>();
         let needed_space = offset_size + bytes.len();
 
-        // Check if we have enough space
-        let offsets_end = self.count * offset_size;
-        if offsets_end + needed_space > self.data_end {
-            return None; // Not enough space
+        // Check if we have enough space, if not, grow the buffer
+        loop {
+            let offsets_end = self.count * offset_size;
+            if offsets_end + needed_space <= self.data_end {
+                break; // We have enough space
+            }
+
+            // Grow the buffer and move existing data
+            let old_len = self.buffer.as_ref().len();
+            let old_data_end = self.data_end;
+            let data_size = old_len - old_data_end;
+
+            // Grow the buffer
+            self.buffer.grow();
+            let new_len = self.buffer.as_ref().len();
+            let new_data_end = new_len - data_size;
+
+            // Move existing data from old position to new position
+            if data_size > 0 {
+                let buffer = self.buffer.as_mut();
+                // Copy data from [old_data_end..old_len] to [new_data_end..new_len]
+                buffer.copy_within(old_data_end..old_len, new_data_end);
+                // Zero out the old data area
+                buffer[old_data_end..new_data_end].fill(0);
+
+                // Update all stored offsets to point to new positions
+                let offset_size = size_of::<usize>();
+                let offset_delta = new_data_end as i64 - old_data_end as i64;
+
+                for i in 0..self.count {
+                    let offset_pos = i * offset_size;
+                    // Read current offset
+                    let offset_bytes: [u8; 8] = buffer[offset_pos..offset_pos + offset_size]
+                        .try_into()
+                        .expect("Failed to read offset");
+                    let old_offset = usize::from_le_bytes(offset_bytes);
+
+                    // Update offset
+                    let new_offset = (old_offset as i64 + offset_delta) as usize;
+                    let new_offset_bytes = new_offset.to_le_bytes();
+                    buffer[offset_pos..offset_pos + offset_size].copy_from_slice(&new_offset_bytes);
+                }
+            }
+
+            // Update data_end
+            self.data_end = new_data_end;
         }
 
         // Calculate new data position
@@ -70,7 +113,7 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> Buffers<T> {
         self.count += 1;
         self.data_end = new_data_end;
 
-        Some(index)
+        index
     }
 
     /// Get the number of stored entries
@@ -105,7 +148,7 @@ impl<T: AsMut<[u8]> + AsRef<[u8]>> Buffers<T> {
         // - Entry 1 (second stored) ends where entry 0 starts
         // - Entry i ends where entry (i-1) starts
         let end_offset = if index == 0 {
-            // Last stored entry goes to the original end
+            // Last stored entry goes to the current buffer end
             buffer.len()
         } else {
             // Get the start of the previously stored entry (index - 1)
@@ -160,9 +203,9 @@ mod tests {
         let data2 = b"world";
         let data3 = b"rust";
 
-        let idx1 = store.append(data1).unwrap();
-        let idx2 = store.append(data2).unwrap();
-        let idx3 = store.append(data3).unwrap();
+        let idx1 = store.append(data1);
+        let idx2 = store.append(data2);
+        let idx3 = store.append(data3);
 
         assert_eq!(idx1, 0);
         assert_eq!(idx2, 1);
@@ -181,24 +224,21 @@ mod tests {
     fn test_empty_data() {
         let mut store = Buffers::new(vec![0u8; 1024]);
 
-        let idx = store.append(b"").unwrap();
+        let idx = store.append(b"");
         assert_eq!(idx, 0);
         assert_eq!(store.get(0).unwrap(), b"");
     }
 
     #[test]
-    fn test_capacity_limit() {
+    fn test_auto_growing() {
         let mut store = Buffers::new(vec![0u8; 32]);
 
-        // Fill up the store
+        // Add data that will require growing
         let mut indices = Vec::new();
-        for i in 0..10 {
+        for i in 0..5 {
             let data = format!("data{i}");
-            if let Some(idx) = store.append(data.as_bytes()) {
-                indices.push(idx);
-            } else {
-                break;
-            }
+            let idx = store.append(data.as_bytes());
+            indices.push(idx);
         }
 
         // Verify we can read all stored data
@@ -207,16 +247,17 @@ mod tests {
             assert_eq!(store.get(idx).unwrap(), expected.as_bytes());
         }
 
-        // Try to add more data when full
-        assert_eq!(store.append(b"overflow"), None);
+        // Should be able to add more data due to auto-growing
+        let overflow_idx = store.append(b"overflow");
+        assert_eq!(store.get(overflow_idx).unwrap(), b"overflow");
     }
 
     #[test]
     fn test_clear() {
         let mut store = Buffers::new(vec![0u8; 1024]);
 
-        store.append(b"test1").unwrap();
-        store.append(b"test2").unwrap();
+        store.append(b"test1");
+        store.append(b"test2");
         assert_eq!(store.len(), 2);
 
         store.clear();
@@ -225,7 +266,7 @@ mod tests {
         assert_eq!(store.get(0), None);
 
         // Should be able to add data again after clear
-        let idx = store.append(b"after_clear").unwrap();
+        let idx = store.append(b"after_clear");
         assert_eq!(idx, 0);
         assert_eq!(store.get(0).unwrap(), b"after_clear");
     }
@@ -234,17 +275,17 @@ mod tests {
     fn test_different_backing_types() {
         // Test with Vec
         let mut vec_store = Buffers::new(vec![0u8; 1024]);
-        vec_store.append(b"vec_test").unwrap();
+        vec_store.append(b"vec_test");
         assert_eq!(vec_store.get(0).unwrap(), b"vec_test");
 
         // Test with array
         let mut array_store = Buffers::new([0u8; 1024]);
-        array_store.append(b"array_test").unwrap();
+        array_store.append(b"array_test");
         assert_eq!(array_store.get(0).unwrap(), b"array_test");
 
         // Test with boxed slice
         let mut boxed_store = Buffers::new(vec![0u8; 1024].into_boxed_slice());
-        boxed_store.append(b"boxed_test").unwrap();
+        boxed_store.append(b"boxed_test");
         assert_eq!(boxed_store.get(0).unwrap(), b"boxed_test");
     }
 
@@ -259,13 +300,10 @@ mod tests {
             let mut store = Buffers::new(vec![0u8; 8192]);
             let mut indices = Vec::new();
 
-            // Store all data that fits
+            // Store all data (will auto-grow as needed)
             for data in &data_list {
-                if let Some(idx) = store.append(data) {
-                    indices.push(idx);
-                } else {
-                    break;
-                }
+                let idx = store.append(data);
+                indices.push(idx);
             }
 
             // Verify all stored data can be retrieved correctly
@@ -288,17 +326,12 @@ mod tests {
         ) {
             let mut store = Buffers::new(vec![0u8; 1024]);
 
-            // Try to store the data
-            let result = store.append(&data);
+            // Store the data (will auto-grow if needed)
+            let idx = store.append(&data);
 
-            if let Some(idx) = result {
-                // If storage succeeded, retrieval should work
-                prop_assert_eq!(store.get(idx).unwrap(), data.as_slice());
-                prop_assert_eq!(store.len(), 1);
-            } else {
-                // If storage failed, it should be due to insufficient space
-                prop_assert!(data.len() + size_of::<usize>() > 1024);
-            }
+            // Storage should always succeed due to auto-growing
+            prop_assert_eq!(store.get(idx).unwrap(), data.as_slice());
+            prop_assert_eq!(store.len(), 1);
         }
 
         #[test]
@@ -311,14 +344,11 @@ mod tests {
         ) {
             let mut store = Buffers::new(vec![0u8; 4096]);
 
-            // Store data
+            // Store data (will auto-grow as needed)
             let mut valid_indices = Vec::new();
             for data in &data_list {
-                if let Some(idx) = store.append(data) {
-                    valid_indices.push(idx);
-                } else {
-                    break;
-                }
+                let idx = store.append(data);
+                valid_indices.push(idx);
             }
 
             // Test access with various indices
@@ -346,18 +376,18 @@ mod tests {
             let initial_free_space = store.free_space();
             prop_assert_eq!(initial_free_space, buffer_size);
 
-            let mut total_used = 0;
             for data in &data_list {
                 let space_before = store.free_space();
-                if store.append(data).is_some() {
-                    let space_after = store.free_space();
-                    total_used += data.len() + size_of::<usize>();
-                    prop_assert_eq!(space_after, buffer_size - total_used);
-                    prop_assert!(space_after < space_before);
+                let _idx = store.append(data);
+                let space_after = store.free_space();
+
+                // Due to auto-growing, we might have more space than expected
+                if space_before >= data.len() + size_of::<usize>() {
+                    // No growth needed
+                    prop_assert_eq!(space_after, space_before - (data.len() + size_of::<usize>()));
                 } else {
-                    // If append failed, free space should be unchanged
-                    prop_assert_eq!(store.free_space(), space_before);
-                    break;
+                    // Buffer grew, so space_after should be positive
+                    prop_assert!(space_after > 0);
                 }
             }
         }
@@ -372,9 +402,9 @@ mod tests {
         let data2 = b"second";
         let data3 = b"";
 
-        let idx1 = store.append(data1).unwrap();
-        let idx2 = store.append(data2).unwrap();
-        let idx3 = store.append(data3).unwrap();
+        let idx1 = store.append(data1);
+        let idx2 = store.append(data2);
+        let idx3 = store.append(data3);
 
         // Test len(&self) -> usize
         assert_eq!(store.len(), 3);

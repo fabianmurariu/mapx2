@@ -29,13 +29,9 @@ fn demo_with_vec() {
 
     // Store some text data
     for text in &texts {
-        match store.append(text.as_bytes()) {
-            Some(idx) => {
-                indices.push(idx);
-                println!("   Stored '{text}' at index {idx}");
-            }
-            None => println!("   Failed to store '{text}'"),
-        }
+        let idx = store.append(text.as_bytes());
+        indices.push(idx);
+        println!("   Stored '{text}' at index {idx}");
     }
 
     println!("   Store length: {}", store.len());
@@ -63,11 +59,9 @@ fn demo_with_array() {
         vec![], // Empty data
     ];
 
-    for (i, data) in binary_data.iter().enumerate() {
-        match store.append(data) {
-            Some(idx) => println!("   Stored {} bytes at index {}", data.len(), idx),
-            None => println!("   Failed to store data {}", i),
-        }
+    for data in binary_data.iter() {
+        let idx = store.append(data);
+        println!("   Stored {} bytes at index {}", data.len(), idx);
     }
 
     // Verify retrieval
@@ -92,13 +86,8 @@ fn demo_with_boxed_slice() {
     // Store varying size data
     for size in [1, 10, 50, 100, 200] {
         let data: Vec<u8> = (0..size).map(|i| (i % 256) as u8).collect();
-        match store.append(&data) {
-            Some(idx) => println!("   Stored {} byte pattern at index {}", size, idx),
-            None => {
-                println!("   Could not store {} bytes (insufficient space)", size);
-                break;
-            }
-        }
+        let idx = store.append(&data);
+        println!("   Stored {} byte pattern at index {}", size, idx);
     }
 
     println!(
@@ -114,34 +103,24 @@ fn demo_capacity_limits() {
     let mut store = Buffers::new(vec![0u8; 64]); // Small buffer
 
     let mut count = 0;
-    loop {
-        let data = format!("entry_{}", count);
-        match store.append(data.as_bytes()) {
-            Some(idx) => {
-                count += 1;
-                println!(
-                    "   Stored entry {} at index {} ({} bytes free)",
-                    count,
-                    idx,
-                    store.free_space()
-                );
-            }
-            None => {
-                println!("   Reached capacity after {} entries", count);
-                break;
-            }
-        }
-
-        if count > 20 {
-            // Safety break
-            break;
-        }
+    for i in 0..20 {
+        let data = format!("entry_{}", i);
+        let idx = store.append(data.as_bytes());
+        count += 1;
+        println!(
+            "   Stored entry {} at index {} ({} bytes free)",
+            count,
+            idx,
+            store.free_space()
+        );
     }
 
-    // Try to store one more
-    if store.append(b"overflow").is_none() {
-        println!("   Confirmed: cannot store additional data");
-    }
+    // Store one more to demonstrate auto-growing
+    let idx = store.append(b"auto_grow_test");
+    println!(
+        "   Stored overflow test at index {} (auto-grew buffer)",
+        idx
+    );
     println!();
 }
 
@@ -163,13 +142,9 @@ fn demo_kv_store() {
         }
 
         fn put(&mut self, key: &str, value: &[u8]) -> Result<(), &'static str> {
-            match self.store.append(value) {
-                Some(idx) => {
-                    self.index.insert(key.to_string(), idx);
-                    Ok(())
-                }
-                None => Err("Insufficient storage space"),
-            }
+            let idx = self.store.append(value);
+            self.index.insert(key.to_string(), idx);
+            Ok(())
         }
 
         fn get(&self, key: &str) -> Option<&[u8]> {
@@ -193,14 +168,12 @@ fn demo_kv_store() {
     ];
 
     for (key, value) in &data {
-        match kv.put(key, value) {
-            Ok(()) => println!(
-                "   Stored {}: {:?}",
-                key,
-                std::str::from_utf8(value).unwrap_or("<binary>")
-            ),
-            Err(e) => println!("   Failed to store {}: {}", key, e),
-        }
+        kv.put(key, value).unwrap();
+        println!(
+            "   Stored {}: {:?}",
+            key,
+            std::str::from_utf8(value).unwrap_or("<binary>")
+        );
     }
 
     let (entries, free) = kv.stats();
