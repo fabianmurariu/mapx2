@@ -1,0 +1,12 @@
+[workspace]
+members = ["diskmap", "concurrent_diskmap"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+
+[workspace.dependencies]
+proptest = "1.7.0"
+proptest-derive = "0.6.0"
+memmap2 = "0.9.7"
