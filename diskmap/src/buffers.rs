@@ -58,11 +58,8 @@ impl<'a, T: ByteStore> BuffersSlice<'a, T> {
         self.end - self.start
     }
 
-    /// Return an iterator over the entries in this slice
-    pub fn iter<'s>(&'s self) -> BuffersSliceIter<'a, 's, T>
-    where
-        's: 'a,
-    {
+    /// Return a consuming iterator over the entries in this slice
+    pub fn iter(self) -> BuffersSliceIter<'a, T> {
         BuffersSliceIter {
             slice: self,
             pos: 0,
@@ -85,7 +82,7 @@ impl<'a, T: ByteStore> BuffersSlice<'a, T> {
     }
 
     /// Get a reference to the data at the given index in the slice
-    pub fn get(&self, index: usize) -> Option<&[u8]> {
+    pub fn get(&self, index: usize) -> Option<&'a [u8]> {
         if index >= self.len() {
             return None;
         }
@@ -122,42 +119,22 @@ impl<'a, T: ByteStore> BuffersSlice<'a, T> {
     }
 }
 
-pub struct BuffersSliceIter<'buf, 'slice, T: ByteStore> {
-    slice: &'slice BuffersSlice<'buf, T>,
+pub struct BuffersSliceIter<'a, T: ByteStore> {
+    slice: BuffersSlice<'a, T>,
     pos: usize,
 }
 
-impl<'buf, 'slice, T: ByteStore> Iterator for BuffersSliceIter<'buf, 'slice, T>
-where
-    'slice: 'buf,
-{
-    type Item = &'buf [u8];
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.pos >= self.slice.len() {
-            return None;
-        }
-        let item = self.slice.get(self.pos);
-        self.pos += 1;
-        item
-    }
-}
-
-pub struct BuffersIter<'a, T: ByteStore> {
-    buffers: &'a Buffers<T>,
-    pos: usize,
-}
-
-impl<'a, T: ByteStore> Iterator for BuffersIter<'a, T> {
+impl<'a, T: ByteStore> Iterator for BuffersSliceIter<'a, T> {
     type Item = &'a [u8];
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.pos >= self.buffers.len() {
-            return None;
+        let idx = self.pos;
+        if idx < self.slice.len() {
+            self.pos += 1;
+            self.slice.get(idx)
+        } else {
+            None
         }
-        let item = self.buffers.get(self.pos);
-        self.pos += 1;
-        item
     }
 }
 
@@ -183,12 +160,9 @@ impl<T: ByteStore> Buffers<T> {
         }
     }
 
-    /// Return an iterator over all entries
-    pub fn iter(&self) -> BuffersIter<'_, T> {
-        BuffersIter {
-            buffers: self,
-            pos: 0,
-        }
+    /// Return an iterator over all entries (by reference)
+    pub fn iter(&self) -> BuffersSliceIter<'_, T> {
+        self.slice(0, self.len()).iter()
     }
 
     /// Append a byte slice to the store, returning the index of the stored data
@@ -460,25 +434,25 @@ mod tests {
                 // Full slice
                 let slice = store.slice(0, store.len());
                 assert_eq!(slice.len(), store.len());
-                for (i, entry) in slice.iter().enumerate() {
+                for (i, entry) in slice.clone().iter().enumerate() {
                     assert_eq!(entry, store.get(i).unwrap());
                 }
 
                 // Subslice
                 let sub = store.slice(2, 5);
                 assert_eq!(sub.len(), 3);
-                assert_eq!(sub.get(0).unwrap(), "two".as_bytes());
-                assert_eq!(sub.get(2).unwrap(), "four".as_bytes());
-                let collected: Vec<_> = sub.iter().map(|b|unsafe { str::from_utf8_unchecked(b) }).collect();
-                assert_eq!(collected, vec!["two", "three", "four"]);
+                assert_eq!(sub.get(0).unwrap(), b"two");
+                assert_eq!(sub.get(2).unwrap(), b"four".as_ref());
+                let collected: Vec<_> = sub.clone().iter().collect();
+                assert_eq!(collected, vec![b"two".as_ref(), b"three".as_ref(), b"four".as_ref()]);
 
-                // Nested slice
+                // Nested slice (consume the slice)
                 let nested = sub.slice(1, 3);
                 assert_eq!(nested.len(), 2);
-                assert_eq!(nested.get(0).unwrap(), b"three".as_ref());
-                assert_eq!(nested.get(1).unwrap(), b"four".as_ref());
-                let nested_vec: Vec<_> = nested.iter().collect();
-                assert_eq!(nested_vec, vec![b"three".as_ref(), b"four".as_ref()]);
+                let mut iter = nested.iter();
+                assert_eq!(iter.next().unwrap(), b"three".as_ref());
+                assert_eq!(iter.next().unwrap(), b"four".as_ref());
+                assert_eq!(iter.next(), None);
             }
 
             #[test]
@@ -513,7 +487,7 @@ mod tests {
                         for end in start..=len {
                             let slice = store.slice(start, end);
                             let expected: Vec<_> = (start..end).map(|i| store.get(i).unwrap()).collect();
-                            let iter: Vec<_> = slice.iter().collect();
+                            let iter: Vec<_> = slice.clone().iter().collect();
                             prop_assert_eq!(expected, iter);
                             prop_assert_eq!(slice.len(), end - start);
                         }
@@ -536,7 +510,7 @@ mod tests {
                     let outer = store.slice(1, len-1);
                     let mid = outer.slice(1, outer.len()-1);
                     let expected: Vec<_> = (2..len-2).map(|i| store.get(i).unwrap()).collect();
-                    let iter: Vec<_> = mid.iter().collect();
+                    let iter: Vec<_> = mid.clone().iter().collect();
                     prop_assert_eq!(expected, iter);
                 }
             }
