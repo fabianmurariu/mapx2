@@ -34,6 +34,13 @@ pub struct Buffers<T: ByteStore> {
     data_end: usize,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct BuffersSlice<'a, T: ByteStore> {
+    buffer: &'a T,
+    start: usize,
+    end: usize,
+}
+
 impl<T: ByteStore> Buffers<T> {
     /// Create a new ByteStore with the given buffer
     pub fn new(buffer: T) -> Self {
