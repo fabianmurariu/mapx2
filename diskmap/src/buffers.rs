@@ -138,6 +138,18 @@ impl<'a, T: ByteStore> Iterator for BuffersSliceIter<'a, T> {
     }
 }
 
+impl<'a, B> IntoIterator for BuffersSlice<'a, B>
+where
+    B: ByteStore,
+{
+    type Item = &'a [u8];
+    type IntoIter = BuffersSliceIter<'a, B>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
 impl<T: ByteStore> Buffers<T> {
     /// Create a new ByteStore with the given buffer
     pub fn new(buffer: T) -> Self {
@@ -424,97 +436,6 @@ mod tests {
                 indices.push(idx);
             }
 
-            #[test]
-            fn test_buffers_slice_and_iter() {
-                let mut store = Buffers::new(vec![0u8; 1024]);
-                let idxs: Vec<_> = [
-                    "zero", "one","two", "three", "four", "five"
-                ].iter().map(|d| store.append(d)).collect();
-
-                // Full slice
-                let slice = store.slice(0, store.len());
-                assert_eq!(slice.len(), store.len());
-                for (i, entry) in slice.clone().iter().enumerate() {
-                    assert_eq!(entry, store.get(i).unwrap());
-                }
-
-                // Subslice
-                let sub = store.slice(2, 5);
-                assert_eq!(sub.len(), 3);
-                assert_eq!(sub.get(0).unwrap(), b"two");
-                assert_eq!(sub.get(2).unwrap(), b"four".as_ref());
-                let collected: Vec<_> = sub.clone().iter().collect();
-                assert_eq!(collected, vec![b"two".as_ref(), b"three".as_ref(), b"four".as_ref()]);
-
-                // Nested slice (consume the slice)
-                let nested = sub.slice(1, 3);
-                assert_eq!(nested.len(), 2);
-                let mut iter = nested.iter();
-                assert_eq!(iter.next().unwrap(), b"three".as_ref());
-                assert_eq!(iter.next().unwrap(), b"four".as_ref());
-                assert_eq!(iter.next(), None);
-            }
-
-            #[test]
-            fn test_buffers_iter_equivalence() {
-                let mut store = Buffers::new(vec![0u8; 512]);
-                for i in 0..10 {
-                    let s = format!("entry{i}");
-                    store.append(s.as_bytes());
-                }
-                let manual: Vec<_> = (0..store.len()).map(|i| store.get(i).unwrap()).collect();
-                let iter: Vec<_> = store.iter().collect();
-                assert_eq!(manual, iter);
-            }
-
-            proptest! {
-                #[test]
-                fn prop_slice_iter_equivalence(
-                    data_list in prop::collection::vec(
-                        prop::collection::vec(any::<u8>(), 0..20),
-                        1..30
-                    )
-                ) {
-                    let mut store = Buffers::new(vec![0u8; 4096]);
-                    for data in &data_list {
-                        store.append(data);
-                    }
-                    let len = store.len();
-                    prop_assert!(len == data_list.len());
-
-                    // Try all valid slices
-                    for start in 0..=len {
-                        for end in start..=len {
-                            let slice = store.slice(start, end);
-                            let expected: Vec<_> = (start..end).map(|i| store.get(i).unwrap()).collect();
-                            let iter: Vec<_> = slice.clone().iter().collect();
-                            prop_assert_eq!(expected, iter);
-                            prop_assert_eq!(slice.len(), end - start);
-                        }
-                    }
-                }
-
-                #[test]
-                fn prop_nested_slice_equivalence(
-                    data_list in prop::collection::vec(
-                        prop::collection::vec(any::<u8>(), 0..10),
-                        5..20
-                    )
-                ) {
-                    let mut store = Buffers::new(vec![0u8; 2048]);
-                    for data in &data_list {
-                        store.append(data);
-                    }
-                    let len = store.len();
-                    if len < 5 { return Ok(()); }
-                    let outer = store.slice(1, len-1);
-                    let mid = outer.slice(1, outer.len()-1);
-                    let expected: Vec<_> = (2..len-2).map(|i| store.get(i).unwrap()).collect();
-                    let iter: Vec<_> = mid.clone().iter().collect();
-                    prop_assert_eq!(expected, iter);
-                }
-            }
-
             // Verify all stored data can be retrieved correctly
             for (i, &idx) in indices.iter().enumerate() {
                 prop_assert_eq!(store.get(idx).unwrap(), data_list[i].as_slice());
@@ -528,7 +449,104 @@ mod tests {
             // Verify length is correct
             prop_assert_eq!(store.len(), indices.len());
         }
+    }
 
+    #[test]
+    fn test_buffers_slice_and_iter() {
+        let mut store = Buffers::new(vec![0u8; 1024]);
+        let idxs: Vec<_> = ["zero", "one", "two", "three", "four", "five"]
+            .iter()
+            .map(|d| store.append(d))
+            .collect();
+
+        // Full slice
+        let slice = store.slice(0, store.len());
+        assert_eq!(slice.len(), store.len());
+        for (i, entry) in slice.iter().enumerate() {
+            assert_eq!(entry, store.get(i).unwrap());
+        }
+
+        // Subslice
+        let sub = store.slice(2, 5);
+        assert_eq!(sub.len(), 3);
+        assert_eq!(sub.get(0).unwrap(), b"two");
+        assert_eq!(sub.get(2).unwrap(), b"four".as_ref());
+        let collected: Vec<_> = sub.clone().iter().collect();
+        assert_eq!(
+            collected,
+            vec![b"two".as_ref(), b"three".as_ref(), b"four".as_ref()]
+        );
+
+        // Nested slice (consume the slice)
+        let nested = sub.slice(1, 3);
+        assert_eq!(nested.len(), 2);
+        let mut iter = nested.iter();
+        assert_eq!(iter.next().unwrap(), b"three".as_ref());
+        assert_eq!(iter.next().unwrap(), b"four".as_ref());
+        assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn test_buffers_iter_equivalence() {
+        let mut store = Buffers::new(vec![0u8; 512]);
+        for i in 0..10 {
+            let s = format!("entry{i}");
+            store.append(s.as_bytes());
+        }
+        let manual: Vec<_> = (0..store.len()).map(|i| store.get(i).unwrap()).collect();
+        let iter: Vec<_> = store.iter().collect();
+        assert_eq!(manual, iter);
+    }
+
+    proptest! {
+        #[test]
+        fn prop_slice_iter_equivalence(
+            data_list in prop::collection::vec(
+                prop::collection::vec(any::<u8>(), 0..20),
+                1..30
+            )
+        ) {
+            let mut store = Buffers::new(vec![0u8; 4096]);
+            for data in &data_list {
+                store.append(data);
+            }
+            let len = store.len();
+            prop_assert!(len == data_list.len());
+
+            // Try all valid slices
+            for start in 0..=len {
+                for end in start..=len {
+                    let slice = store.slice(start, end);
+                    let expected: Vec<_> = (start..end).map(|i| store.get(i).unwrap()).collect();
+                    let iter: Vec<_> = slice.clone().iter().collect();
+                    prop_assert_eq!(expected, iter);
+                    prop_assert_eq!(slice.len(), end - start);
+                }
+            }
+        }
+
+        #[test]
+        fn prop_nested_slice_equivalence(
+            data_list in prop::collection::vec(
+                prop::collection::vec(any::<u8>(), 0..10),
+                5..20
+            )
+        ) {
+            let mut store = Buffers::new(vec![0u8; 2048]);
+            for data in &data_list {
+                store.append(data);
+            }
+            let len = store.len();
+            if len < 5 { return Ok(()); }
+            let outer = store.slice(1, len-1);
+            let mid = outer.slice(1, outer.len()-1);
+            let expected: Vec<_> = (2..len-2).map(|i| store.get(i).unwrap()).collect();
+            let iter: Vec<_> = mid.iter().collect();
+            prop_assert_eq!(expected, iter);
+        }
+    }
+
+    proptest! {
         #[test]
         fn prop_test_store_bounds(
             data in prop::collection::vec(any::<u8>(), 1..1000)
@@ -542,7 +560,9 @@ mod tests {
             prop_assert_eq!(store.get(idx).unwrap(), data.as_slice());
             prop_assert_eq!(store.len(), 1);
         }
+    }
 
+    proptest! {
         #[test]
         fn prop_test_no_out_of_bounds_access(
             data_list in prop::collection::vec(
@@ -572,7 +592,9 @@ mod tests {
                 }
             }
         }
+    }
 
+    proptest! {
         #[test]
         fn prop_test_free_space_calculation(
             data_list in prop::collection::vec(
