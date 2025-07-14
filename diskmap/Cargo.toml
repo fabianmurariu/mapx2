@@ -6,6 +6,7 @@ resolver = "3"
 
 [dependencies]
 memmap2.workspace = true
+bytemuck.workspace = true
 
 [dev-dependencies]
 proptest = { workspace = true }

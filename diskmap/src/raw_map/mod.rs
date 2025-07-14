@@ -3,6 +3,8 @@ use std::marker::PhantomData;
 
 use crate::{Buffers, ByteStore};
 
+mod entry;
+
 // Simple Entry for the hash map, containing key and value indices
 struct Entry {
     key_idx: usize,
