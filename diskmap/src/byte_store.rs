@@ -1,4 +1,4 @@
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io;
 
 use memmap2::MmapMut;
@@ -44,7 +44,23 @@ pub struct MMapFile {
 }
 
 impl MMapFile {
-    pub fn new(file: File) -> io::Result<Self> {
+    pub fn new<P: AsRef<std::path::Path>>(path: P, length_kb: usize) -> io::Result<Self> {
+        use std::fs::OpenOptions;
+
+        // Round length_kb to nearest power of 2 (in bytes)
+        let mut size = length_kb.max(1) * 1024;
+        size = size.next_power_of_two();
+
+        let path = path.as_ref();
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(path)?;
+
+        file.set_len(size as u64)?;
+
         let mmap = unsafe { MmapMut::map_mut(&file)? };
         Ok(Self { mmap, file })
     }
@@ -65,42 +81,106 @@ impl AsMut<[u8]> for MMapFile {
 impl ByteStore for MMapFile {
     fn grow(&mut self) {
         // Flush and fsync current changes
-        if let Err(_) = self.mmap.flush() {
-            return; // Handle error gracefully
-        }
-        if let Err(_) = self.file.sync_all() {
-            return; // Handle error gracefully
-        }
+        self.mmap
+            .flush()
+            .unwrap_or_else(|_| panic!("Unrecoverable error flushing mmap"));
 
         let current_size = self.mmap.len();
         let new_size = current_size * 2;
 
-        // Create a temporary file name
-        let temp_path = format!("/tmp/mmap_grow_{}", std::process::id());
+        // Drop Mmap to make sure we can resize the file
+        // then resize the file
+        // then remap it
+        // do NOT make a new file
 
-        // Create new file with double capacity
-        if let Ok(new_file) = OpenOptions::new()
+        let mut old_mmap = MmapMut::map_anon(1)
+            .unwrap_or_else(|_| panic!("Unrecoverable error creating anonymous mmap"));
+
+        std::mem::swap(&mut self.mmap, &mut old_mmap);
+        drop(old_mmap);
+        self.file.set_len(new_size as u64).unwrap_or_else(|_| {
+            panic!("Unrecoverable error resizing file to {new_size} bytes");
+        });
+        self.mmap = unsafe {
+            MmapMut::map_mut(&self.file).unwrap_or_else(|_| {
+                panic!("Unrecoverable error remapping file to {new_size} bytes");
+            })
+        };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs::OpenOptions;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_mmapfile_create_and_write() {
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path();
+
+        let mut mmapfile = MMapFile::new(path, 1).unwrap(); // 1 KB, rounded to 1024
+
+        assert_eq!(mmapfile.as_ref().len(), 1024);
+
+        // Write some data
+        mmapfile.as_mut()[0..4].copy_from_slice(b"test");
+        mmapfile.mmap.flush().unwrap();
+
+        // Reopen and check data
+        drop(mmapfile);
+        let file = OpenOptions::new()
             .read(true)
             .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&temp_path)
-        {
-            // Set the size of the new file
-            if new_file.set_len(new_size as u64).is_ok() {
-                // Create new mmap
-                if let Ok(mut new_mmap) = unsafe { MmapMut::map_mut(&new_file) } {
-                    // Copy existing data
-                    new_mmap[..current_size].copy_from_slice(&self.mmap[..]);
+            .open(path)
+            .unwrap();
+        let mmap = unsafe { memmap2::Mmap::map(&file).unwrap() };
+        assert_eq!(&mmap[0..4], b"test");
+    }
 
-                    // Zero out the new space
-                    new_mmap[current_size..].fill(0);
+    #[test]
+    fn test_mmapfile_grow_and_persist() {
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path();
 
-                    // Replace the old file and mmap
-                    self.mmap = new_mmap;
-                    self.file = new_file;
-                }
-            }
-        }
+        let mut mmapfile = MMapFile::new(path, 1).unwrap(); // 1 KB, rounded to 1024
+        assert_eq!(mmapfile.as_ref().len(), 1024);
+
+        // Write some data at the end
+        let len = mmapfile.as_ref().len();
+        mmapfile.as_mut()[len - 4..len].copy_from_slice(b"grow");
+        mmapfile.mmap.flush().unwrap();
+
+        // Grow the file
+        mmapfile.grow();
+        assert_eq!(mmapfile.as_ref().len(), 2048);
+
+        // Data should still be at the new end
+        assert_eq!(&mmapfile.as_ref()[len - 4..len], b"grow");
+
+        // Write more data after grow
+        mmapfile.as_mut()[0..6].copy_from_slice(b"hello!");
+        mmapfile.mmap.flush().unwrap();
+
+        // Reopen and check both data regions
+        drop(mmapfile);
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+            .unwrap();
+        let mmap = unsafe { memmap2::Mmap::map(&file).unwrap() };
+        assert_eq!(&mmap[len - 4..len], b"grow");
+        assert_eq!(&mmap[0..6], b"hello!");
+    }
+
+    #[test]
+    fn test_mmapfile_rounds_to_power_of_2() {
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path();
+
+        let mmapfile = MMapFile::new(path, 3).unwrap(); // 3 KB, should round to 4096
+        assert_eq!(mmapfile.as_ref().len(), 4096);
     }
 }

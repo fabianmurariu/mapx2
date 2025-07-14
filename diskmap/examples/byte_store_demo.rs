@@ -41,7 +41,7 @@ fn demo_with_vec() {
     for (i, &idx) in indices.iter().enumerate() {
         let retrieved = store.get(idx).unwrap();
         let text = std::str::from_utf8(retrieved).unwrap();
-        println!("   Retrieved index {}: '{}'", idx, text);
+        println!("   Retrieved index {idx}: '{text}'");
         assert_eq!(text, texts[i]);
     }
     println!();
