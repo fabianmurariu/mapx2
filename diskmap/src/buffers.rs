@@ -41,6 +41,126 @@ pub struct BuffersSlice<'a, T: ByteStore> {
     end: usize,
 }
 
+impl<'a, T: ByteStore> BuffersSlice<'a, T> {
+    /// Create a slice of this BuffersSlice from [start, end)
+    pub fn slice(&self, start: usize, end: usize) -> BuffersSlice<'a, T> {
+        assert!(start <= end, "start must be <= end");
+        assert!(end <= self.len(), "end out of bounds");
+        BuffersSlice {
+            buffer: self.buffer,
+            start: self.start + start,
+            end: self.start + end,
+        }
+    }
+
+    /// Return the number of entries in this slice
+    pub fn len(&self) -> usize {
+        self.end - self.start
+    }
+
+    /// Return an iterator over the entries in this slice
+    pub fn iter<'s>(&'s self) -> BuffersSliceIter<'a, 's, T>
+    where
+        's: 'a,
+    {
+        BuffersSliceIter {
+            slice: self,
+            pos: 0,
+        }
+    }
+
+    /// Get the stored cumulative length offset for a given index in the slice
+    fn get_cumulative_offset(&self, index: usize) -> Option<usize> {
+        let global_index = self.start + index;
+        let offset_size = size_of::<usize>();
+        let buffer = self.buffer.as_ref();
+        let offset_pos = global_index * offset_size;
+        if offset_pos + offset_size > buffer.len() {
+            return None;
+        }
+        let offset_bytes: [u8; 8] = buffer[offset_pos..offset_pos + offset_size]
+            .try_into()
+            .ok()?;
+        Some(usize::from_le_bytes(offset_bytes))
+    }
+
+    /// Get a reference to the data at the given index in the slice
+    pub fn get(&self, index: usize) -> Option<&[u8]> {
+        if index >= self.len() {
+            return None;
+        }
+        let buffer = self.buffer.as_ref();
+        let buffer_len = buffer.len();
+
+        // Get cumulative lengths from buffer end
+        let end_cumulative = self.get_cumulative_offset(index)?;
+        let start_cumulative = if index == 0 {
+            if self.start == 0 {
+                0
+            } else {
+                // get the offset for the entry before the slice
+                let offset_size = size_of::<usize>();
+                let offset_pos = (self.start - 1) * offset_size;
+                let offset_bytes: [u8; 8] = buffer[offset_pos..offset_pos + offset_size]
+                    .try_into()
+                    .ok()?;
+                usize::from_le_bytes(offset_bytes)
+            }
+        } else {
+            self.get_cumulative_offset(index - 1)?
+        };
+
+        // Convert cumulative lengths to absolute positions
+        let start_offset = buffer_len - end_cumulative;
+        let end_offset = buffer_len - start_cumulative;
+
+        if start_offset > end_offset || end_offset > buffer_len {
+            return None;
+        }
+
+        Some(&buffer[start_offset..end_offset])
+    }
+}
+
+pub struct BuffersSliceIter<'buf, 'slice, T: ByteStore> {
+    slice: &'slice BuffersSlice<'buf, T>,
+    pos: usize,
+}
+
+impl<'buf, 'slice, T: ByteStore> Iterator for BuffersSliceIter<'buf, 'slice, T>
+where
+    'slice: 'buf,
+{
+    type Item = &'buf [u8];
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.pos >= self.slice.len() {
+            return None;
+        }
+        let item = self.slice.get(self.pos);
+        self.pos += 1;
+        item
+    }
+}
+
+pub struct BuffersIter<'a, T: ByteStore> {
+    buffers: &'a Buffers<T>,
+    pos: usize,
+}
+
+impl<'a, T: ByteStore> Iterator for BuffersIter<'a, T> {
+    type Item = &'a [u8];
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.pos >= self.buffers.len() {
+            return None;
+        }
+        let item = self.buffers.get(self.pos);
+        self.pos += 1;
+        item
+    }
+}
+
 impl<T: ByteStore> Buffers<T> {
     /// Create a new ByteStore with the given buffer
     pub fn new(buffer: T) -> Self {
@@ -52,8 +172,28 @@ impl<T: ByteStore> Buffers<T> {
         }
     }
 
+    /// Create a slice of the buffers from [start, end)
+    pub fn slice(&self, start: usize, end: usize) -> BuffersSlice<'_, T> {
+        assert!(start <= end, "start must be <= end");
+        assert!(end <= self.len(), "end out of bounds");
+        BuffersSlice {
+            buffer: &self.buffer,
+            start,
+            end,
+        }
+    }
+
+    /// Return an iterator over all entries
+    pub fn iter(&self) -> BuffersIter<'_, T> {
+        BuffersIter {
+            buffers: self,
+            pos: 0,
+        }
+    }
+
     /// Append a byte slice to the store, returning the index of the stored data
-    pub fn append(&mut self, bytes: &[u8]) -> usize {
+    pub fn append(&mut self, bytes: impl AsRef<[u8]>) -> usize {
+        let bytes = bytes.as_ref();
         let offset_size = size_of::<usize>();
         let needed_space = offset_size + bytes.len();
 
@@ -308,6 +448,97 @@ mod tests {
             for data in &data_list {
                 let idx = store.append(data);
                 indices.push(idx);
+            }
+
+            #[test]
+            fn test_buffers_slice_and_iter() {
+                let mut store = Buffers::new(vec![0u8; 1024]);
+                let idxs: Vec<_> = [
+                    "zero", "one","two", "three", "four", "five"
+                ].iter().map(|d| store.append(d)).collect();
+
+                // Full slice
+                let slice = store.slice(0, store.len());
+                assert_eq!(slice.len(), store.len());
+                for (i, entry) in slice.iter().enumerate() {
+                    assert_eq!(entry, store.get(i).unwrap());
+                }
+
+                // Subslice
+                let sub = store.slice(2, 5);
+                assert_eq!(sub.len(), 3);
+                assert_eq!(sub.get(0).unwrap(), "two".as_bytes());
+                assert_eq!(sub.get(2).unwrap(), "four".as_bytes());
+                let collected: Vec<_> = sub.iter().map(|b|unsafe { str::from_utf8_unchecked(b) }).collect();
+                assert_eq!(collected, vec!["two", "three", "four"]);
+
+                // Nested slice
+                let nested = sub.slice(1, 3);
+                assert_eq!(nested.len(), 2);
+                assert_eq!(nested.get(0).unwrap(), b"three".as_ref());
+                assert_eq!(nested.get(1).unwrap(), b"four".as_ref());
+                let nested_vec: Vec<_> = nested.iter().collect();
+                assert_eq!(nested_vec, vec![b"three".as_ref(), b"four".as_ref()]);
+            }
+
+            #[test]
+            fn test_buffers_iter_equivalence() {
+                let mut store = Buffers::new(vec![0u8; 512]);
+                for i in 0..10 {
+                    let s = format!("entry{i}");
+                    store.append(s.as_bytes());
+                }
+                let manual: Vec<_> = (0..store.len()).map(|i| store.get(i).unwrap()).collect();
+                let iter: Vec<_> = store.iter().collect();
+                assert_eq!(manual, iter);
+            }
+
+            proptest! {
+                #[test]
+                fn prop_slice_iter_equivalence(
+                    data_list in prop::collection::vec(
+                        prop::collection::vec(any::<u8>(), 0..20),
+                        1..30
+                    )
+                ) {
+                    let mut store = Buffers::new(vec![0u8; 4096]);
+                    for data in &data_list {
+                        store.append(data);
+                    }
+                    let len = store.len();
+                    prop_assert!(len == data_list.len());
+
+                    // Try all valid slices
+                    for start in 0..=len {
+                        for end in start..=len {
+                            let slice = store.slice(start, end);
+                            let expected: Vec<_> = (start..end).map(|i| store.get(i).unwrap()).collect();
+                            let iter: Vec<_> = slice.iter().collect();
+                            prop_assert_eq!(expected, iter);
+                            prop_assert_eq!(slice.len(), end - start);
+                        }
+                    }
+                }
+
+                #[test]
+                fn prop_nested_slice_equivalence(
+                    data_list in prop::collection::vec(
+                        prop::collection::vec(any::<u8>(), 0..10),
+                        5..20
+                    )
+                ) {
+                    let mut store = Buffers::new(vec![0u8; 2048]);
+                    for data in &data_list {
+                        store.append(data);
+                    }
+                    let len = store.len();
+                    if len < 5 { return Ok(()); }
+                    let outer = store.slice(1, len-1);
+                    let mid = outer.slice(1, outer.len()-1);
+                    let expected: Vec<_> = (2..len-2).map(|i| store.get(i).unwrap()).collect();
+                    let iter: Vec<_> = mid.iter().collect();
+                    prop_assert_eq!(expected, iter);
+                }
             }
 
             // Verify all stored data can be retrieved correctly
