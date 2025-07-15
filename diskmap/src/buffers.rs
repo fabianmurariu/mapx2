@@ -1,5 +1,5 @@
 use crate::byte_store::ByteStore;
-use std::mem::size_of;
+use std::{mem::size_of, ops::Index};
 
 /// A slotted byte store that stores offsets at the beginning and data at the end.
 ///
@@ -311,6 +311,17 @@ impl<T: ByteStore> Buffers<T> {
     pub fn clear(&mut self) {
         self.count = 0;
         self.data_end = self.buffer.as_ref().len();
+    }
+}
+
+impl<B> Index<usize> for Buffers<B>
+where
+    B: ByteStore,
+{
+    type Output = [u8];
+
+    fn index(&self, index: usize) -> &Self::Output {
+        self.get(index).expect("Index out of bounds")
     }
 }
 
