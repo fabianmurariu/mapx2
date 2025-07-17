@@ -5,7 +5,7 @@ edition = "2024"
 resolver = "3"
 
 [dependencies]
-bit-struct.workspace = true
+modular-bitfield.workspace = true
 bytemuck = { workspace = true, features = ["derive"] }
 memmap2.workspace = true
 

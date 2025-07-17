@@ -1,16 +1,11 @@
 use std::hash::{BuildHasher, Hasher, RandomState};
 use std::marker::PhantomData;
 
+use crate::fixed_buffers::FixedVec;
+use crate::raw_map::entry::Entry;
 use crate::{Buffers, ByteStore};
 
 mod entry;
-
-// Simple Entry for the hash map, containing key and value indices
-struct Entry {
-    key_idx: usize,
-    value_idx: usize,
-    occupied: bool,
-}
 
 /// This is a open address hash map implementation,
 /// it takes any &[u8] as key and value.
@@ -24,32 +19,35 @@ pub struct OpenHashMap<
     V: AsRef<[u8]>,
     HFn: Fn(&[u8]) -> usize,
     EqFn: Fn(&[u8], &[u8]) -> bool,
+    EBs: ByteStore,
     KBs: ByteStore,
     VBs: ByteStore,
     S = RandomState,
 > {
+    entries: FixedVec<Entry, EBs>,
     keys: Buffers<KBs>,
     values: Buffers<VBs>,
     hash_fn: HFn,
     eq_fn: EqFn,
-    entries: Vec<Entry>,
     capacity: usize,
     size: usize,
     _marker: PhantomData<(K, V, S)>,
 }
 
-impl<K, V, HFn, EqFn, KBs, VBs, S> OpenHashMap<K, V, HFn, EqFn, KBs, VBs, S>
+impl<K, V, HFn, EqFn, EBs, KBs, VBs, S> OpenHashMap<K, V, HFn, EqFn, EBs, KBs, VBs, S>
 where
     K: AsRef<[u8]>,
     V: AsRef<[u8]>,
     HFn: Fn(&[u8]) -> usize,
     EqFn: Fn(&[u8], &[u8]) -> bool,
+    EBs: ByteStore,
     KBs: ByteStore,
     VBs: ByteStore,
     S: Default,
 {
     /// Creates a new OpenHashMap with the given initial capacity and hash/equality functions
     pub fn new(
+        entry_store: EBs,
         keys_store: KBs,
         values_store: VBs,
         initial_capacity: usize,
@@ -58,17 +56,8 @@ where
     ) -> Self {
         let keys = Buffers::new(keys_store);
         let values = Buffers::new(values_store);
+        let entries = FixedVec::new(entry_store);
         let capacity = initial_capacity.max(16).next_power_of_two();
-
-        // Initialize entries with empty slots
-        let mut entries = Vec::with_capacity(capacity);
-        for _ in 0..capacity {
-            entries.push(Entry {
-                key_idx: 0,
-                value_idx: 0,
-                occupied: false,
-            });
-        }
 
         Self {
             keys,
@@ -83,12 +72,18 @@ where
     }
 
     /// Creates a new OpenHashMap with default hash and equality functions
-    pub fn with_capacity(keys_store: KBs, values_store: VBs, initial_capacity: usize) -> Self
+    pub fn with_capacity(
+        entry_store: EBs,
+        keys_store: KBs,
+        values_store: VBs,
+        initial_capacity: usize,
+    ) -> Self
     where
         HFn: Default,
         EqFn: Default,
     {
         Self::new(
+            entry_store,
             keys_store,
             values_store,
             initial_capacity,
@@ -124,35 +119,32 @@ where
     }
 
     /// Find the slot index for a key
-    fn find_slot(&self, key: &[u8]) -> Option<usize> {
+    /// if the key is found, returns Some(index),
+    /// if the key is not found return the first empty slot index
+    fn find_slot(&self, key: &[u8]) -> Result<usize, usize> {
         if self.is_empty() {
-            return None;
+            return Err(self.len());
         }
 
         let hash = (self.hash_fn)(key);
-        let mut index = hash % self.capacity;
+        let index = hash % self.capacity;
 
         // Linear probing
-        for _ in 0..self.capacity {
-            let entry = &self.entries[index];
-
-            if !entry.occupied {
+        for entry in &self.entries[index..self.capacity()] {
+            if !entry.is_occupied() {
                 // Empty slot, key not found
-                return None;
+                return Err(entry.key_pos());
             }
 
             // Check if this is our key
-            if let Some(stored_key) = self.keys.get(entry.key_idx) {
+            if let Some(stored_key) = self.keys.get(entry.key_pos()) {
                 if (self.eq_fn)(key, stored_key) {
-                    return Some(index);
+                    return Ok(index);
                 }
             }
-
-            // Continue probing
-            index = (index + 1) % self.capacity;
         }
 
-        None
+        Err(self.len())
     }
 
     /// Insert a key-value pair into the map
@@ -164,40 +156,35 @@ where
 
         let key_bytes = k.as_ref();
         let value_bytes = v.as_ref();
-        let hash = (self.hash_fn)(key_bytes);
-        let mut index = hash % self.capacity;
 
-        // Try to find the key or an empty slot
-        for _ in 0..self.capacity {
-            let entry = &self.entries[index];
-
-            if !entry.occupied {
-                // Found an empty slot, insert here
+        match self.find_slot(key_bytes) {
+            Err(slot_idx) if slot_idx == self.len() => {
+                // need to resize
+            }
+            Err(slot_idx) => {
+                // Found an empty slot, insert new key-value pair
                 let key_idx = self.keys.append(key_bytes);
                 let value_idx = self.values.append(value_bytes);
 
-                self.entries[index] = Entry {
-                    key_idx,
-                    value_idx,
-                    occupied: true,
-                };
-
+                // Create a new entry
+                self.entries[slot_idx] = Entry::occupied_at_pos(key_idx, value_idx);
                 self.size += 1;
-                return Some(value_idx);
-            }
 
-            // Check if this is the same key
-            if let Some(stored_key) = self.keys.get(entry.key_idx) {
-                if (self.eq_fn)(key_bytes, stored_key) {
-                    // Update the value for existing key
-                    let value_idx = self.values.append(value_bytes);
-                    self.entries[index].value_idx = value_idx;
-                    return Some(value_idx);
-                }
+                Some(slot_idx);
             }
+            Ok(slot_idx) => {
+                todo!("Key already exists, update value");
+                // Key already exists, update value
+                let entry = &mut self.entries[slot_idx];
+                let old_value_idx = entry.key_pos();
+                let new_value_idx = self.values.append(value_bytes);
 
-            // Continue probing
-            index = (index + 1) % self.capacity;
+                // Update the value index in the entry
+                entry.set_value(new_value_idx);
+
+                // If the value was updated, return the old value index
+                Some(old_value_idx);
+            }
         }
 
         // Map is full, shouldn't happen with proper resizing
@@ -222,7 +209,7 @@ where
         let new_capacity = self.capacity * 2;
 
         // Save old entries
-        let old_entries = std::mem::replace(&mut self.entries, Vec::with_capacity(new_capacity));
+        let old_entries = self.entries.reserve();
 
         // Initialize new entries with empty slots
         for _ in 0..new_capacity {

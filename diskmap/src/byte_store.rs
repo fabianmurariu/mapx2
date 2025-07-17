@@ -5,32 +5,27 @@ use memmap2::MmapMut;
 
 pub trait ByteStore: AsRef<[u8]> + AsMut<[u8]> {
     // doubles the capacity of the store
-    fn grow(&mut self);
+    fn grow(&mut self, additional: usize);
 }
 
 impl ByteStore for Vec<u8> {
-    fn grow(&mut self) {
-        let new_capacity = if self.capacity() == 0 {
-            1
-        } else {
-            self.capacity() * 2
-        };
-        self.reserve(new_capacity - self.len());
-        self.resize(new_capacity, 0);
+    fn grow(&mut self, additional: usize) {
+        self.reserve(additional);
     }
 }
 
 impl<const N: usize> ByteStore for [u8; N] {
-    fn grow(&mut self) {
+    fn grow(&mut self, _additional: usize) {
         // Arrays have fixed size and cannot grow
         // This is a no-op for arrays
+        panic!("Cannot grow fixed size arrays")
     }
 }
 
 impl ByteStore for Box<[u8]> {
-    fn grow(&mut self) {
+    fn grow(&mut self, additional: usize) {
         let old_len = self.len();
-        let new_len = if old_len == 0 { 1 } else { old_len * 2 };
+        let new_len = (old_len + additional).next_power_of_two();
 
         let mut new_vec = vec![0u8; new_len];
         new_vec[..old_len].copy_from_slice(self);
@@ -79,14 +74,14 @@ impl AsMut<[u8]> for MMapFile {
 }
 
 impl ByteStore for MMapFile {
-    fn grow(&mut self) {
+    fn grow(&mut self, additional: usize) {
         // Flush and fsync current changes
         self.mmap
             .flush()
             .unwrap_or_else(|_| panic!("Unrecoverable error flushing mmap"));
 
         let current_size = self.mmap.len();
-        let new_size = current_size * 2;
+        let new_size = (current_size + additional).next_power_of_two();
 
         // Drop Mmap to make sure we can resize the file
         // then resize the file
@@ -153,7 +148,7 @@ mod tests {
         mmapfile.mmap.flush().unwrap();
 
         // Grow the file
-        mmapfile.grow();
+        mmapfile.grow(1024);
         assert_eq!(mmapfile.as_ref().len(), 2048);
 
         // Data should still be at the new end
