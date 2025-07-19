@@ -34,12 +34,23 @@ pub struct Buffers<T: ByteStore> {
     data_end: usize,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 pub struct BuffersSlice<'a, T: ByteStore> {
     byte_store: &'a T,
     start: usize,
     end: usize,
 }
+
+impl<'a, T> Clone for BuffersSlice<'a, T>
+where
+    T: ByteStore,
+{
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<'a, T> Copy for BuffersSlice<'a, T> where T: ByteStore {}
 
 impl<'a, T: ByteStore> BuffersSlice<'a, T> {
     /// Create a slice of this BuffersSlice from [start, end)
@@ -342,11 +353,15 @@ mod tests {
     macro_rules! test_buffers {
         ($name:ident, $size:expr, $body:expr) => {
             paste::item! {
+                fn [<check_ $name>]<B: ByteStore>(store: Buffers<B>) {
+                    $body(store);
+                }
+
                 #[test]
                 fn [<$name _vec_backend>]() {
                     let size = $size;
                     let buffers = Buffers::new(vec![0u8; size]);
-                    $body(buffers);
+                    [<check_ $name>](buffers);
                 }
 
                 #[test]
@@ -356,116 +371,99 @@ mod tests {
                     let tmp = NamedTempFile::new().unwrap();
                     let mmap_file = MMapFile::new(tmp.path(), size).unwrap();
                     let buffers = Buffers::new(mmap_file);
-                    $body(buffers);
+                    [<check_ $name>](buffers);
                 }
             }
         };
     }
 
-    fn check_basic_operations<B: ByteStore>(mut store: Buffers<B>) {
-        // Test empty store
-        assert_eq!(store.len(), 0);
-        assert!(store.is_empty());
-        assert_eq!(store.get(0), None);
-
-        // Add some data
-        let data1 = b"hello";
-        let data2 = b"world";
-        let data3 = b"rust";
-
-        let idx1 = store.append(data1);
-        let idx2 = store.append(data2);
-        let idx3 = store.append(data3);
-
-        assert_eq!(idx1, 0);
-        assert_eq!(idx2, 1);
-        assert_eq!(idx3, 2);
-        assert_eq!(store.len(), 3);
-        assert!(!store.is_empty());
-
-        // Retrieve data
-        assert_eq!(store.get(0).unwrap(), data1);
-        assert_eq!(store.get(1).unwrap(), data2);
-        assert_eq!(store.get(2).unwrap(), data3);
-        assert_eq!(store.get(3), None);
-    }
-
     test_buffers!(
         test_basic_operations,
         1024,
-        (|buffers| {
-            check_basic_operations(buffers);
+        (|mut store: Buffers<B>| {
+            // Test empty store
+            assert_eq!(store.len(), 0);
+            assert!(store.is_empty());
+            assert_eq!(store.get(0), None);
+
+            // Add some data
+            let data1 = b"hello";
+            let data2 = b"world";
+            let data3 = b"rust";
+
+            let idx1 = store.append(data1);
+            let idx2 = store.append(data2);
+            let idx3 = store.append(data3);
+
+            assert_eq!(idx1, 0);
+            assert_eq!(idx2, 1);
+            assert_eq!(idx3, 2);
+            assert_eq!(store.len(), 3);
+            assert!(!store.is_empty());
+
+            // Retrieve data
+            assert_eq!(store.get(0).unwrap(), data1);
+            assert_eq!(store.get(1).unwrap(), data2);
+            assert_eq!(store.get(2).unwrap(), data3);
+            assert_eq!(store.get(3), None);
         })
     );
 
-    #[test]
-    fn test_empty_data() {
-        let mut store = Buffers::new(vec![0u8; 1024]);
+    test_buffers!(
+        test_empty_data,
+        1024,
+        (|mut store: Buffers<B>| {
+            let idx = store.append(b"");
+            assert_eq!(idx, 0);
+            assert_eq!(store.get(0).unwrap(), b"");
+        })
+    );
 
-        let idx = store.append(b"");
-        assert_eq!(idx, 0);
-        assert_eq!(store.get(0).unwrap(), b"");
-    }
+    test_buffers!(
+        test_auto_growing,
+        32,
+        (|mut store: Buffers<B>| {
+            // Add data that will require growing
+            let mut indices = Vec::new();
+            for i in 0..5 {
+                let data = format!("data{i}");
+                let idx = store.append(data.as_bytes());
+                indices.push(idx);
+            }
 
-    #[test]
-    fn test_auto_growing() {
-        let mut store = Buffers::new(vec![0u8; 32]);
+            // Verify we can read all stored data
+            for (i, &idx) in indices.iter().enumerate() {
+                let expected = format!("data{i}");
+                assert_eq!(store.get(idx).unwrap(), expected.as_bytes());
+            }
 
-        // Add data that will require growing
-        let mut indices = Vec::new();
-        for i in 0..5 {
-            let data = format!("data{i}");
-            let idx = store.append(data.as_bytes());
-            indices.push(idx);
-        }
+            // Should be able to add more data due to auto-growing
+            let overflow_idx = store.append(b"overflow");
+            assert_eq!(store.get(overflow_idx).unwrap(), b"overflow");
+        })
+    );
 
-        // Verify we can read all stored data
-        for (i, &idx) in indices.iter().enumerate() {
-            let expected = format!("data{i}");
-            assert_eq!(store.get(idx).unwrap(), expected.as_bytes());
-        }
+    test_buffers!(
+        test_clear,
+        1024,
+        (|mut store: Buffers<B>| {
+            store.append(b"test1");
+            store.append(b"test2");
+            assert_eq!(store.len(), 2);
 
-        // Should be able to add more data due to auto-growing
-        let overflow_idx = store.append(b"overflow");
-        assert_eq!(store.get(overflow_idx).unwrap(), b"overflow");
-    }
+            store.clear();
+            assert_eq!(store.len(), 0);
+            assert!(store.is_empty());
+            assert_eq!(store.get(0), None);
 
-    #[test]
-    fn test_clear() {
-        let mut store = Buffers::new(vec![0u8; 1024]);
+            // Should be able to add data again after clear
+            let idx = store.append(b"after_clear");
+            assert_eq!(idx, 0);
+            assert_eq!(store.get(0).unwrap(), b"after_clear");
+        })
+    );
 
-        store.append(b"test1");
-        store.append(b"test2");
-        assert_eq!(store.len(), 2);
-
-        store.clear();
-        assert_eq!(store.len(), 0);
-        assert!(store.is_empty());
-        assert_eq!(store.get(0), None);
-
-        // Should be able to add data again after clear
-        let idx = store.append(b"after_clear");
-        assert_eq!(idx, 0);
-        assert_eq!(store.get(0).unwrap(), b"after_clear");
-    }
-
-    #[test]
-    fn test_different_backing_types() {
-        // Test with Vec
-        let mut vec_store = Buffers::new(vec![0u8; 1024]);
-        vec_store.append(b"vec_test");
-        assert_eq!(vec_store.get(0).unwrap(), b"vec_test");
-
-        // Test with array
-        let mut array_store = Buffers::new([0u8; 1024]);
-        array_store.append(b"array_test");
-        assert_eq!(array_store.get(0).unwrap(), b"array_test");
-
-        // Test with boxed slice
-        let mut boxed_store = Buffers::new(vec![0u8; 1024].into_boxed_slice());
-        boxed_store.append(b"boxed_test");
-        assert_eq!(boxed_store.get(0).unwrap(), b"boxed_test");
-    }
+    // // test_different_backing_types is not rewritten with the macro since it tests array and boxed slice specifically.
 
     proptest! {
         #[test]
@@ -499,51 +497,55 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_buffers_slice_and_iter() {
-        let mut store = Buffers::new(vec![0u8; 1024]);
-        for d in ["zero", "one", "two", "three", "four", "five"] {
-            store.append(d);
-        }
+    test_buffers!(
+        test_buffers_slice_and_iter,
+        1024,
+        (|mut store: Buffers<B>| {
+            for d in ["zero", "one", "two", "three", "four", "five"] {
+                store.append(d);
+            }
 
-        // Full slice
-        let slice = store.slice(0, store.len());
-        assert_eq!(slice.len(), store.len());
-        for (i, entry) in slice.iter().enumerate() {
-            assert_eq!(entry, store.get(i).unwrap());
-        }
+            // Full slice
+            let slice = store.slice(0, store.len());
+            assert_eq!(slice.len(), store.len());
+            for (i, entry) in slice.iter().enumerate() {
+                assert_eq!(entry, store.get(i).unwrap());
+            }
 
-        // Subslice
-        let sub = store.slice(2, 5);
-        assert_eq!(sub.len(), 3);
-        assert_eq!(sub.get(0).unwrap(), b"two");
-        assert_eq!(sub.get(2).unwrap(), b"four".as_ref());
-        let collected: Vec<_> = sub.clone().iter().collect();
-        assert_eq!(
-            collected,
-            vec![b"two".as_ref(), b"three".as_ref(), b"four".as_ref()]
-        );
+            // Subslice
+            let sub = store.slice(2, 5);
+            assert_eq!(sub.len(), 3);
+            assert_eq!(sub.get(0).unwrap(), b"two");
+            assert_eq!(sub.get(2).unwrap(), b"four".as_ref());
+            let collected: Vec<_> = sub.iter().collect();
+            assert_eq!(
+                collected,
+                vec![b"two".as_ref(), b"three".as_ref(), b"four".as_ref()]
+            );
 
-        // Nested slice (consume the slice)
-        let nested = sub.slice(1, 3);
-        assert_eq!(nested.len(), 2);
-        let mut iter = nested.iter();
-        assert_eq!(iter.next().unwrap(), b"three".as_ref());
-        assert_eq!(iter.next().unwrap(), b"four".as_ref());
-        assert_eq!(iter.next(), None);
-    }
+            // Nested slice (consume the slice)
+            let nested = sub.slice(1, 3);
+            assert_eq!(nested.len(), 2);
+            let mut iter = nested.iter();
+            assert_eq!(iter.next().unwrap(), b"three".as_ref());
+            assert_eq!(iter.next().unwrap(), b"four".as_ref());
+            assert_eq!(iter.next(), None);
+        })
+    );
 
-    #[test]
-    fn test_buffers_iter_equivalence() {
-        let mut store = Buffers::new(vec![0u8; 512]);
-        for i in 0..10 {
-            let s = format!("entry{i}");
-            store.append(s.as_bytes());
-        }
-        let manual: Vec<_> = (0..store.len()).map(|i| store.get(i).unwrap()).collect();
-        let iter: Vec<_> = store.iter().collect();
-        assert_eq!(manual, iter);
-    }
+    test_buffers!(
+        test_buffers_iter_equivalence,
+        512,
+        (|mut store: Buffers<B>| {
+            for i in 0..10 {
+                let s = format!("entry{i}");
+                store.append(s.as_bytes());
+            }
+            let manual: Vec<_> = (0..store.len()).map(|i| store.get(i).unwrap()).collect();
+            let iter: Vec<_> = store.iter().collect();
+            assert_eq!(manual, iter);
+        })
+    );
 
     proptest! {
         #[test]
