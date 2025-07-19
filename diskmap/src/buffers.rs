@@ -334,15 +334,17 @@ where
 #[cfg(test)]
 mod tests {
 
+    use super::*;
     use crate::byte_store::{ByteStore, MMapFile};
+    use proptest::prelude::*;
 
     #[cfg(test)]
     macro_rules! test_buffers {
-        ($name:ident, $body:expr) => {
+        ($name:ident, $size:expr, $body:expr) => {
             paste::item! {
                 #[test]
                 fn [<$name _vec_backend>]() {
-                    let size = 1024;
+                    let size = $size;
                     let buffers = Buffers::new(vec![0u8; size]);
                     $body(buffers);
                 }
@@ -350,17 +352,15 @@ mod tests {
                 #[test]
                 fn [<$name _mmap_backend>]() {
                     use tempfile::NamedTempFile;
-                    let size = 1024;
+                    let size = $size;
                     let tmp = NamedTempFile::new().unwrap();
-                    let mmap_file = MMapFile::new(tmp.path(), size / 1024).unwrap();
+                    let mmap_file = MMapFile::new(tmp.path(), size).unwrap();
                     let buffers = Buffers::new(mmap_file);
                     $body(buffers);
                 }
             }
         };
     }
-    use super::*;
-    use proptest::prelude::*;
 
     fn check_basic_operations<B: ByteStore>(mut store: Buffers<B>) {
         // Test empty store
@@ -390,9 +390,13 @@ mod tests {
         assert_eq!(store.get(3), None);
     }
 
-    test_buffers!(test_basic_operations, |buffers| {
-        check_basic_operations(buffers);
-    });
+    test_buffers!(
+        test_basic_operations,
+        1024,
+        (|buffers| {
+            check_basic_operations(buffers);
+        })
+    );
 
     #[test]
     fn test_empty_data() {

@@ -39,11 +39,11 @@ pub struct MMapFile {
 }
 
 impl MMapFile {
-    pub fn new<P: AsRef<std::path::Path>>(path: P, length_kb: usize) -> io::Result<Self> {
+    pub fn new<P: AsRef<std::path::Path>>(path: P, length_bytes: usize) -> io::Result<Self> {
         use std::fs::OpenOptions;
 
         // Round length_kb to nearest power of 2 (in bytes)
-        let mut size = length_kb.max(1) * 1024;
+        let mut size = length_bytes.max(1);
         size = size.next_power_of_two();
 
         let path = path.as_ref();
@@ -115,7 +115,7 @@ mod tests {
         let tmp = NamedTempFile::new().unwrap();
         let path = tmp.path();
 
-        let mut mmapfile = MMapFile::new(path, 1).unwrap(); // 1 KB, rounded to 1024
+        let mut mmapfile = MMapFile::new(path, 1024).unwrap(); // 1 KB, rounded to 1024
 
         assert_eq!(mmapfile.as_ref().len(), 1024);
 
@@ -139,7 +139,7 @@ mod tests {
         let tmp = NamedTempFile::new().unwrap();
         let path = tmp.path();
 
-        let mut mmapfile = MMapFile::new(path, 1).unwrap(); // 1 KB, rounded to 1024
+        let mut mmapfile = MMapFile::new(path, 1024).unwrap(); // 1 KB, rounded to 1024
         assert_eq!(mmapfile.as_ref().len(), 1024);
 
         // Write some data at the end
@@ -175,7 +175,7 @@ mod tests {
         let tmp = NamedTempFile::new().unwrap();
         let path = tmp.path();
 
-        let mmapfile = MMapFile::new(path, 3).unwrap(); // 3 KB, should round to 4096
+        let mmapfile = MMapFile::new(path, 3 * 1024).unwrap(); // 3 KB, should round to 4096
         assert_eq!(mmapfile.as_ref().len(), 4096);
     }
 }
