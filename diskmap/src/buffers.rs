@@ -27,7 +27,7 @@ use std::{mem::size_of, ops::Index};
 /// assert_eq!(store.len(), 2);
 /// ```
 pub struct Buffers<T: ByteStore> {
-    buffer: T,
+    byte_store: T,
     /// Number of slots (entries) currently stored
     count: usize,
     /// Current position where the next data will be written (grows backwards)
@@ -36,7 +36,7 @@ pub struct Buffers<T: ByteStore> {
 
 #[derive(Debug, Clone, Copy)]
 pub struct BuffersSlice<'a, T: ByteStore> {
-    buffer: &'a T,
+    byte_store: &'a T,
     start: usize,
     end: usize,
 }
@@ -47,7 +47,7 @@ impl<'a, T: ByteStore> BuffersSlice<'a, T> {
         assert!(start <= end, "start must be <= end");
         assert!(end <= self.len(), "end out of bounds");
         BuffersSlice {
-            buffer: self.buffer,
+            byte_store: self.byte_store,
             start: self.start + start,
             end: self.start + end,
         }
@@ -70,7 +70,7 @@ impl<'a, T: ByteStore> BuffersSlice<'a, T> {
     fn get_cumulative_offset(&self, index: usize) -> Option<usize> {
         let global_index = self.start + index;
         let offset_size = size_of::<usize>();
-        let buffer = self.buffer.as_ref();
+        let buffer = self.byte_store.as_ref();
         let offset_pos = global_index * offset_size;
         if offset_pos + offset_size > buffer.len() {
             return None;
@@ -86,7 +86,7 @@ impl<'a, T: ByteStore> BuffersSlice<'a, T> {
         if index >= self.len() {
             return None;
         }
-        let buffer = self.buffer.as_ref();
+        let buffer = self.byte_store.as_ref();
         let buffer_len = buffer.len();
 
         // Get cumulative lengths from buffer end
@@ -152,10 +152,10 @@ where
 
 impl<T: ByteStore> Buffers<T> {
     /// Create a new ByteStore with the given buffer
-    pub fn new(buffer: T) -> Self {
-        let data_end = buffer.as_ref().len();
+    pub fn new(byte_store: T) -> Self {
+        let data_end = byte_store.as_ref().len();
         Self {
-            buffer,
+            byte_store,
             count: 0,
             data_end,
         }
@@ -166,7 +166,7 @@ impl<T: ByteStore> Buffers<T> {
         assert!(start <= end, "start must be <= end");
         assert!(end <= self.len(), "end out of bounds");
         BuffersSlice {
-            buffer: &self.buffer,
+            byte_store: &self.byte_store,
             start,
             end,
         }
@@ -191,24 +191,24 @@ impl<T: ByteStore> Buffers<T> {
             }
 
             // Grow the buffer and move existing data
-            let old_len = self.buffer.as_ref().len();
+            let old_len = self.byte_store.as_ref().len();
             let old_data_end = self.data_end;
             let data_size = old_len - old_data_end;
 
             // Grow the buffer directly to accommodate the new data
-            let buffer_len = self.buffer.as_ref().len();
+            let buffer_len = self.byte_store.as_ref().len();
             let free_space = self.free_space();
             let additional_space = (free_space + needed_space)
                 .next_power_of_two()
                 .max(buffer_len * 2);
-            self.buffer.grow(additional_space);
+            self.byte_store.grow(additional_space);
 
-            let new_len = self.buffer.as_ref().len();
+            let new_len = self.byte_store.as_ref().len();
             let new_data_end = new_len - data_size;
 
             // Move existing data from old position to new position
             if data_size > 0 {
-                let buffer = self.buffer.as_mut();
+                let buffer = self.byte_store.as_mut();
                 // Copy data from [old_data_end..old_len] to [new_data_end..new_len]
                 buffer.copy_within(old_data_end..old_len, new_data_end);
                 // Zero out the old data area
@@ -225,7 +225,7 @@ impl<T: ByteStore> Buffers<T> {
         let new_data_end = self.data_end - bytes.len();
 
         // Write the data at the end
-        let buffer = self.buffer.as_mut();
+        let buffer = self.byte_store.as_mut();
         buffer[new_data_end..self.data_end].copy_from_slice(bytes);
 
         // Calculate cumulative length from buffer end
@@ -265,7 +265,7 @@ impl<T: ByteStore> Buffers<T> {
             return None;
         }
 
-        let buffer = self.buffer.as_ref();
+        let buffer = self.byte_store.as_ref();
         let offset_size = size_of::<usize>();
         let offset_pos = index * offset_size;
         let offset_bytes: [u8; 8] = buffer[offset_pos..offset_pos + offset_size]
@@ -280,7 +280,7 @@ impl<T: ByteStore> Buffers<T> {
             return None;
         }
 
-        let buffer = self.buffer.as_ref();
+        let buffer = self.byte_store.as_ref();
         let buffer_len = buffer.len();
 
         // Get cumulative lengths from buffer end
@@ -316,7 +316,7 @@ impl<T: ByteStore> Buffers<T> {
     /// Clear all entries from the store
     pub fn clear(&mut self) {
         self.count = 0;
-        self.data_end = self.buffer.as_ref().len();
+        self.data_end = self.byte_store.as_ref().len();
     }
 }
 
@@ -333,13 +333,36 @@ where
 
 #[cfg(test)]
 mod tests {
+
+    use crate::byte_store::{ByteStore, MMapFile};
+
+    #[cfg(test)]
+    macro_rules! test_buffers {
+        ($name:ident, $body:expr) => {
+            paste::item! {
+                #[test]
+                fn [<$name _vec_backend>]() {
+                    let size = 1024;
+                    let buffers = Buffers::new(vec![0u8; size]);
+                    $body(buffers);
+                }
+
+                #[test]
+                fn [<$name _mmap_backend>]() {
+                    use tempfile::NamedTempFile;
+                    let size = 1024;
+                    let tmp = NamedTempFile::new().unwrap();
+                    let mmap_file = MMapFile::new(tmp.path(), size / 1024).unwrap();
+                    let buffers = Buffers::new(mmap_file);
+                    $body(buffers);
+                }
+            }
+        };
+    }
     use super::*;
     use proptest::prelude::*;
 
-    #[test]
-    fn test_basic_operations() {
-        let mut store = Buffers::new(vec![0u8; 1024]);
-
+    fn check_basic_operations<B: ByteStore>(mut store: Buffers<B>) {
         // Test empty store
         assert_eq!(store.len(), 0);
         assert!(store.is_empty());
@@ -366,6 +389,10 @@ mod tests {
         assert_eq!(store.get(2).unwrap(), data3);
         assert_eq!(store.get(3), None);
     }
+
+    test_buffers!(test_basic_operations, |buffers| {
+        check_basic_operations(buffers);
+    });
 
     #[test]
     fn test_empty_data() {
