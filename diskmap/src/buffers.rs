@@ -195,8 +195,14 @@ impl<T: ByteStore> Buffers<T> {
             let old_data_end = self.data_end;
             let data_size = old_len - old_data_end;
 
-            // Grow the buffer
-            self.buffer.grow();
+            // Grow the buffer directly to accommodate the new data
+            let buffer_len = self.buffer.as_ref().len();
+            let free_space = self.free_space();
+            let additional_space = (free_space + needed_space)
+                .next_power_of_two()
+                .max(buffer_len * 2);
+            self.buffer.grow(additional_space);
+
             let new_len = self.buffer.as_ref().len();
             let new_data_end = new_len - data_size;
 
@@ -465,10 +471,9 @@ mod tests {
     #[test]
     fn test_buffers_slice_and_iter() {
         let mut store = Buffers::new(vec![0u8; 1024]);
-        let idxs: Vec<_> = ["zero", "one", "two", "three", "four", "five"]
-            .iter()
-            .map(|d| store.append(d))
-            .collect();
+        for d in ["zero", "one", "two", "three", "four", "five"] {
+            store.append(d);
+        }
 
         // Full slice
         let slice = store.slice(0, store.len());

@@ -1,6 +1,6 @@
 use std::{
     marker::PhantomData,
-    ops::{Deref, DerefMut, Index, IndexMut, Range, RangeInclusive},
+    ops::{Deref, DerefMut},
 };
 
 use bytemuck::Pod;
@@ -90,6 +90,23 @@ where
         self.reserve(self.capacity * t_size);
         self.capacity *= 2; // Double the capacity
     }
+
+    /// Resizes the FixedVec to the new length, filling new elements with the given value.
+    pub fn resize(&mut self, new_len: usize, value: T) {
+        if new_len > self.capacity {
+            let new_capacity = new_len.next_power_of_two();
+            let t_size = std::mem::size_of::<T>();
+            let additional = (new_capacity - self.capacity) * t_size;
+            self.store.grow(additional);
+            self.capacity = self.store.as_ref().len() / t_size;
+        }
+
+        let current_len = self.len;
+        if new_len > current_len {
+            self.inner_mut()[current_len..new_len].fill(value);
+        }
+        self.len = new_len;
+    }
 }
 
 impl<T: Pod, S: ByteStore> Deref for FixedVec<T, S> {
@@ -119,48 +136,46 @@ mod tests {
 
         vec.push(42);
         assert_eq!(vec.len(), 1);
-        assert_eq!(vec.get(0), Some(&42));
+        assert_eq!(vec[0], 42);
 
-        vec.set(5, 99);
+        vec.resize(6, 0);
+        vec[5] = 99;
         assert_eq!(vec.len(), 6);
-        assert_eq!(vec.get(5), Some(&99));
-        // All unset elements are zero-initialized (by Vec<u8>), so get(1) should be Some(&0)
-        assert_eq!(vec.get(1), Some(&0));
+        assert_eq!(vec[5], 99);
+        // All unset elements are zero-initialized (by Vec<u8>), so vec[1] should be 0
+        assert_eq!(vec[1], 0);
     }
 
     #[test]
     fn test_resize() {
         let backing = vec![0u8; 40];
         let mut vec = FixedVec::<u32, Vec<u8>>::new(backing);
-        // No resize method; test only set/get/len
         assert_eq!(vec.len(), 0);
-        vec.set(0, 0);
-        vec.set(1, 0);
-        vec.set(2, 0);
-        vec.set(3, 0);
-        vec.set(4, 0);
+        vec.resize(5, 0);
         assert_eq!(vec.len(), 5);
-        assert_eq!(vec.get(4), Some(&0));
-        assert_eq!(vec.get(5), None);
+        assert_eq!(vec[4], 0);
+        // Out of bounds access would panic, so we check length only
+        assert_eq!(vec.len(), 5);
     }
 
     #[test]
-    fn test_set_out_of_bounds() {
+    fn test_resize_out_of_bounds() {
         let backing = vec![0u8; 40];
         let mut vec = FixedVec::<u32, Vec<u8>>::new(backing);
         // This should not panic, it should grow the underlying store
-        vec.set(10, 42);
-        assert_eq!(vec.get(10), Some(&42));
+        vec.resize(11, 0);
+        vec[10] = 42;
+        assert_eq!(vec[10], 42);
     }
 
     #[test]
     fn test_resize_exceeds_capacity() {
-        // No resize method; this test is not applicable
-        // Just ensure FixedVec can be created and set beyond initial size
         let backing = vec![0u8; 40];
         let mut vec = FixedVec::<u32, Vec<u8>>::new(backing);
-        vec.set(20, 123);
-        assert_eq!(vec.get(20), Some(&123));
+        assert_eq!(vec.capacity, 40 / 4);
+        vec.resize(21, 0);
+        vec[20] = 123;
+        assert_eq!(vec[20], 123);
     }
 
     proptest! {
@@ -168,17 +183,18 @@ mod tests {
         fn prop_test_store_retrieval(index in 0usize..10, value in any::<u32>()) {
             let backing = vec![0u8; 40];
             let mut vec = FixedVec::<u32, Vec<u8>>::new(backing);
-            vec.set(index, value);
-            prop_assert_eq!(vec.get(index), Some(&value));
+            vec.resize(index + 1, 0);
+            vec[index] = value;
+            prop_assert_eq!(vec[index], value);
         }
 
         #[test]
         fn prop_test_resize_behavior(new_len in 0usize..10) {
             let backing = vec![0u8; 40];
             let mut vec = FixedVec::<u32, Vec<u8>>::new(backing);
-            // No resize method; just set elements up to new_len
+            vec.resize(new_len, 0);
             for i in 0..new_len {
-                vec.set(i, 0);
+                vec[i] = 0;
             }
             prop_assert_eq!(vec.len(), new_len);
         }

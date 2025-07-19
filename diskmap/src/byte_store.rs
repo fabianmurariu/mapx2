@@ -10,7 +10,7 @@ pub trait ByteStore: AsRef<[u8]> + AsMut<[u8]> {
 
 impl ByteStore for Vec<u8> {
     fn grow(&mut self, additional: usize) {
-        self.reserve(additional);
+        self.resize(self.len() + additional, 0);
     }
 }
 
