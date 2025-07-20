@@ -1,3 +1,4 @@
+use std::borrow::Borrow;
 use std::hash::{BuildHasher, RandomState};
 use std::marker::PhantomData;
 
@@ -204,7 +205,7 @@ where
     }
 
     /// Get a value by key
-    pub fn get(&self, k: &K) -> Option<&[u8]> {
+    pub fn get<Q: AsRef<[u8]>>(&self, k: Q) -> Option<&[u8]> {
         let slot_idx = self.find_slot(k.as_ref()).ok()?;
         let entry = &self.entries[slot_idx];
 
@@ -233,55 +234,55 @@ mod tests {
         map.insert(b"hello", b"world");
 
         // Get the value
-        let value = map.get(&b"hello".as_ref());
+        let value = map.get(b"hello");
         assert_eq!(value, Some(b"world".as_ref()));
 
         // Test non-existent key
-        let value = map.get(&b"not_found".as_ref());
+        let value = map.get(b"not_found");
         assert_eq!(value, None);
     }
 
-    // #[test]
-    // fn test_update_value() {
-    //     let mut map: OpenHashMap<_, _, _, _, Vec<u8>, Vec<u8>> = OpenHashMap::default();
+    #[test]
+    fn test_update_value() {
+        let mut map: OHM<Vec<u8>, Vec<u8>> = OpenHashMap::default();
 
-    //     // Insert a key-value pair
-    //     map.insert(b"key".to_vec(), b"value1".to_vec());
+        // Insert a key-value pair
+        map.insert(b"key".to_vec(), b"value1".to_vec());
 
-    //     // Update the value
-    //     map.insert(b"key".to_vec(), b"value2".to_vec());
+        // Update the value
+        map.insert(b"key".to_vec(), b"value2".to_vec());
 
-    //     // Get the updated value
-    //     let value = map.get(&b"key".to_vec());
-    //     assert_eq!(value, Some(b"value2".as_ref()));
-    // }
+        // Get the updated value
+        let value = map.get(b"key");
+        assert_eq!(value, Some(b"value2".as_ref()));
+    }
 
-    // #[test]
-    // fn test_multiple_entries() {
-    //     let mut map: OpenHashMap<_, _, _, _, Vec<u8>, Vec<u8>> = OpenHashMap::default();
+    #[test]
+    fn test_multiple_entries() {
+        let mut map: OHM<Vec<u8>, Vec<u8>> = OpenHashMap::default();
 
-    //     // Insert multiple key-value pairs
-    //     map.insert(b"key1".to_vec(), b"value1".to_vec());
-    //     map.insert(b"key2".to_vec(), b"value2".to_vec());
-    //     map.insert(b"key3".to_vec(), b"value3".to_vec());
+        // Insert multiple key-value pairs
+        map.insert(b"key1".to_vec(), b"value1".to_vec());
+        map.insert(b"key2".to_vec(), b"value2".to_vec());
+        map.insert(b"key3".to_vec(), b"value3".to_vec());
 
-    //     // Get values
-    //     assert_eq!(map.get(&b"key1".to_vec()), Some(b"value1".as_ref()));
-    //     assert_eq!(map.get(&b"key2".to_vec()), Some(b"value2".as_ref()));
-    //     assert_eq!(map.get(&b"key3".to_vec()), Some(b"value3".as_ref()));
-    // }
+        // Get values
+        assert_eq!(map.get(b"key1"), Some(b"value1".as_ref()));
+        assert_eq!(map.get(b"key2"), Some(b"value2".as_ref()));
+        assert_eq!(map.get(b"key3"), Some(b"value3".as_ref()));
+    }
 
-    // #[test]
-    // fn test_empty_map() {
-    //     let map: OpenHashMap<Vec<u8>, Vec<u8>, _, _, Vec<u8>, Vec<u8>> = OpenHashMap::default();
+    #[test]
+    fn test_empty_map() {
+        let map: OHM<&[u8], &[u8]> = OpenHashMap::default();
 
-    //     // Map should be empty
-    //     assert_eq!(map.len(), 0);
-    //     assert!(map.is_empty());
+        // Map should be empty
+        assert_eq!(map.len(), 0);
+        assert!(map.is_empty());
 
-    //     // Get on empty map
-    //     assert_eq!(map.get(&b"key".to_vec()), None);
-    // }
+        // Get on empty map
+        assert_eq!(map.get(b"key"), None);
+    }
 
     // #[test]
     // fn test_resize() {
