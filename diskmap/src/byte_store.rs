@@ -4,13 +4,24 @@ use std::io;
 use memmap2::MmapMut;
 
 pub trait ByteStore: AsRef<[u8]> + AsMut<[u8]> {
-    // doubles the capacity of the store
+    // grows the current store by `additional` bytes
     fn grow(&mut self, additional: usize);
+
+    // creates a new store grows it by `additional` bytes
+    // the new store should be empty
+    // and have enough capacity to hold the current size + additional
+    fn grow_new_empty(&self, additional: usize) -> Self;
 }
 
 impl ByteStore for Vec<u8> {
     fn grow(&mut self, additional: usize) {
         self.resize(self.len() + additional, 0);
+    }
+
+    fn grow_new_empty(&self, additional: usize) -> Self {
+        let mut new_vec = Vec::with_capacity((self.len() + additional).next_power_of_two());
+        new_vec.resize(new_vec.len() + additional, 0);
+        new_vec
     }
 }
 
@@ -19,6 +30,10 @@ impl<const N: usize> ByteStore for [u8; N] {
         // Arrays have fixed size and cannot grow
         // This is a no-op for arrays
         panic!("Cannot grow fixed size arrays")
+    }
+
+    fn grow_new_empty(&self, additional: usize) -> Self {
+        panic!("can't add additional to fixed size N")
     }
 }
 
@@ -31,15 +46,32 @@ impl ByteStore for Box<[u8]> {
         new_vec[..old_len].copy_from_slice(self);
         *self = new_vec.into_boxed_slice();
     }
+
+    fn grow_new_empty(&self, additional: usize) -> Self {
+        let old_len = self.len();
+        let new_len = (old_len + additional).next_power_of_two();
+
+        vec![0u8; new_len].into_boxed_slice()
+    }
 }
 
 pub struct MMapFile {
     mmap: MmapMut,
     file: File,
+    path: std::path::PathBuf,
+    idx: usize,
 }
 
 impl MMapFile {
     pub fn new<P: AsRef<std::path::Path>>(path: P, length_bytes: usize) -> io::Result<Self> {
+        Self::new_inner(path, length_bytes, 0)
+    }
+
+    fn new_inner<P: AsRef<std::path::Path>>(
+        path: P,
+        length_bytes: usize,
+        idx: usize,
+    ) -> io::Result<Self> {
         use std::fs::OpenOptions;
 
         // Round length_kb to nearest power of 2 (in bytes)
@@ -54,10 +86,17 @@ impl MMapFile {
             .truncate(true)
             .open(path)?;
 
+        let path = path.to_path_buf();
+
         file.set_len(size as u64)?;
 
         let mmap = unsafe { MmapMut::map_mut(&file)? };
-        Ok(Self { mmap, file })
+        Ok(Self {
+            mmap,
+            file,
+            idx,
+            path,
+        })
     }
 }
 
@@ -101,6 +140,33 @@ impl ByteStore for MMapFile {
                 panic!("Unrecoverable error remapping file to {new_size} bytes");
             })
         };
+    }
+
+    // Make a new file in the same parent_location with the additional size
+    fn grow_new_empty(&self, additional: usize) -> Self {
+        let current_size = self.mmap.len();
+        let new_size = (current_size + additional).next_power_of_two();
+
+        let parent_path = self
+            .path
+            .parent()
+            .expect("Failed to get parent path of mmap file");
+
+        let path_name = self
+            .path
+            .file_name()
+            .expect("Failed to get file name from mmap file path")
+            .to_string_lossy()
+            .to_string();
+
+        let file_name = parent_path.join(format!("{}_{}.bin", path_name, self.idx + 1));
+        // Create a new file with the new size
+        let new_file =
+            MMapFile::new_inner(file_name, new_size, self.idx + 1).unwrap_or_else(|_| {
+                panic!("Unrecoverable error creating new mmap file with {new_size} bytes");
+            });
+
+        new_file
     }
 }
 

@@ -22,11 +22,12 @@ pub struct Entry {
 
 impl Entry {
     pub fn occupied_at_pos(k_pos: usize, v_pos: usize) -> Self {
-        assert!(pos < (2 ^ 62) - 1);
+        assert!(k_pos < (2 ^ 62) - 1);
+        assert!(v_pos < (2 ^ 62) - 1);
         Entry::new()
             .with_status(Status::Full)
             .with_k_pos(k_pos as u64)
-            .with_v_pos(v_pos)
+            .with_v_pos(v_pos as u64)
     }
 
     pub fn is_occupied(&self) -> bool {
@@ -47,5 +48,22 @@ impl Entry {
 
     pub fn value_pos(&self) -> usize {
         self.v_pos() as usize
+    }
+
+    pub fn set_empty(&mut self) {
+        *self = Entry::new().with_status(Status::Empty);
+    }
+
+    pub fn set_deleted(&mut self) {
+        *self = Entry::new().with_status(Status::Deleted);
+    }
+
+    pub fn set_new_kv(&mut self, k_pos: usize, v_pos: usize) {
+        assert!(k_pos < (2 ^ 62) - 1);
+        assert!(v_pos < (2 ^ 62) - 1);
+        *self = Entry::new()
+            .with_status(Status::Full)
+            .with_k_pos(k_pos as u64)
+            .with_v_pos(v_pos as u64);
     }
 }
