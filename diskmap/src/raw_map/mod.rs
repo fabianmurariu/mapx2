@@ -1,6 +1,7 @@
-use std::borrow::Borrow;
 use std::hash::{BuildHasher, RandomState};
 use std::marker::PhantomData;
+
+use rustc_hash::FxBuildHasher;
 
 use crate::fixed_buffers::FixedVec;
 use crate::raw_map::entry::Entry;
@@ -33,7 +34,7 @@ pub struct OpenHashMap<
 }
 
 impl<K: AsRef<[u8]>, V: AsRef<[u8]>> Default
-    for OpenHashMap<K, V, Vec<u8>, Vec<u8>, Vec<u8>, RandomState>
+    for OpenHashMap<K, V, Vec<u8>, Vec<u8>, Vec<u8>, FxBuildHasher>
 {
     fn default() -> Self {
         let entry_cap = 16 * std::mem::size_of::<Entry>();
@@ -221,9 +222,10 @@ where
 mod tests {
     use super::*;
     use proptest::prelude::*;
+    use rustc_hash::FxBuildHasher;
     use std::collections::HashMap;
 
-    type OHM<K, V> = OpenHashMap<K, V, Vec<u8>, Vec<u8>, Vec<u8>, RandomState>;
+    type OHM<K, V> = OpenHashMap<K, V, Vec<u8>, Vec<u8>, Vec<u8>, FxBuildHasher>;
 
     // Basic functionality tests
     #[test]
@@ -284,130 +286,46 @@ mod tests {
         assert_eq!(map.get(b"key"), None);
     }
 
-    // #[test]
-    // fn test_resize() {
-    //     let hash_fn: Box<dyn Fn(&[u8]) -> usize> = Box::new(|b| {
-    //         // Simple hash function for testing
-    //         if b.is_empty() { 0 } else { b[0] as usize }
-    //     });
-    //     let eq_fn: Box<dyn Fn(&[u8], &[u8]) -> bool> = Box::new(|a, b| a == b);
-    //     let mut map: OpenHashMap<_, _, _, _, Vec<u8>, Vec<u8>> =
-    //         OpenHashMap::new(Vec::new(), Vec::new(), 4, hash_fn, eq_fn);
+    fn check_prop(hm: HashMap<Vec<u8>, Vec<u8>>) {
+        let mut map: OHM<Vec<u8>, Vec<u8>> = OpenHashMap::default();
 
-    //     // Insert enough items to trigger resize
-    //     for i in 0..10 {
-    //         let key = vec![i];
-    //         let value = vec![i * 2];
-    //         map.insert(key, value);
-    //     }
+        // Insert all key-value pairs from the HashMap
+        for (k, v) in hm.iter() {
+            map.insert(k.clone(), v.clone());
+        }
 
-    //     // Check all values after resize
-    //     for i in 0..10 {
-    //         let key = vec![i];
-    //         let expected = vec![i * 2];
-    //         assert_eq!(map.get(&key), Some(expected.as_ref()));
-    //     }
+        // Check the size of the map
+        assert_eq!(map.len(), hm.len());
 
-    //     // Capacity should have increased
-    //     assert!(map.capacity() > 4);
-    // }
+        // Check that all values can be retrieved
+        for (k, v) in hm.iter() {
+            assert_eq!(map.get(k), Some(v.as_ref()));
+        }
+    }
+    #[test]
+    fn it_s_a_hash_map() {
+        let small_hash_map_prop = proptest::collection::hash_map(
+            proptest::collection::vec(0u8..255, 1..10),
+            proptest::collection::vec(0u8..255, 1..10),
+            1..10,
+        );
 
-    // #[test]
-    // fn test_collision_handling() {
-    //     // Create a map with a hash function that always returns the same value
-    //     let hash_fn: Box<dyn Fn(&[u8]) -> usize> = Box::new(|_| 42);
-    //     let eq_fn: Box<dyn Fn(&[u8], &[u8]) -> bool> = Box::new(|a, b| a == b);
-    //     let mut map: OpenHashMap<_, _, _, _, Vec<u8>, Vec<u8>> =
-    //         OpenHashMap::new(Vec::new(), Vec::new(), 16, hash_fn, eq_fn);
+        proptest!(|(values in small_hash_map_prop)|{
+            check_prop(values);
+        });
+    }
 
-    //     // Insert multiple key-value pairs (all will hash to the same bucket)
-    //     map.insert(b"key1".to_vec(), b"value1".to_vec());
-    //     map.insert(b"key2".to_vec(), b"value2".to_vec());
-    //     map.insert(b"key3".to_vec(), b"value3".to_vec());
-
-    //     // Check all values
-    //     assert_eq!(map.get(&b"key1".to_vec()), Some(b"value1".as_ref()));
-    //     assert_eq!(map.get(&b"key2".to_vec()), Some(b"value2".as_ref()));
-    //     assert_eq!(map.get(&b"key3".to_vec()), Some(b"value3".as_ref()));
-    // }
-
-    // // Property-based tests
-
-    // // Helper to convert a Vec<u8> to a human-readable debug string
-    // fn debug_bytes(bytes: &[u8]) -> String {
-    //     format!("{:?}", bytes)
-    // }
-
-    // proptest! {
-    //     // Test that inserting and retrieving works for arbitrary data
-    //     #[test]
-    //     fn prop_insert_get(key: Vec<u8>, value: Vec<u8>) {
-    //         let mut map: OpenHashMap<_, _, _, _, Vec<u8>, Vec<u8>> = OpenHashMap::default();
-
-    //         map.insert(key.clone(), value.clone());
-    //         let result = map.get(&key);
-
-    //         prop_assert_eq!(
-    //             result,
-    //             Some(value.as_ref()),
-    //             "Failed with key: {}, value: {}",
-    //             debug_bytes(&key),
-    //             debug_bytes(&value)
-    //         );
-    //     }
-
-    //     // Test that the map behaves like a standard HashMap
-    //     #[test]
-    //     fn prop_matches_std_hashmap(
-    //         operations: Vec<(Vec<u8>, Vec<u8>)>,
-    //         lookups: Vec<Vec<u8>>
-    //     ) {
-    //         // Limit test size for performance
-    //         let operations = operations.into_iter().take(50).collect::<Vec<_>>();
-    //         let lookups = lookups.into_iter().take(20).collect::<Vec<_>>();
-
-    //         let mut our_map: OpenHashMap<_, _, _, _, Vec<u8>, Vec<u8>> = OpenHashMap::default();
-    //         let mut std_map = HashMap::new();
-
-    //         // Perform operations
-    //         for (key, value) in operations {
-    //             our_map.insert(key.clone(), value.clone());
-    //             std_map.insert(key, value);
-    //         }
-
-    //         // Test lookups
-    //         for key in lookups {
-    //             let our_result = our_map.get(&key);
-    //             let std_result = std_map.get(&key).map(|v| v.as_slice());
-
-    //             prop_assert_eq!(
-    //                 our_result,
-    //                 std_result,
-    //                 "Results differ for key: {}",
-    //                 debug_bytes(&key)
-    //             );
-    //         }
-    //     }
-
-    //     // Test that the map correctly handles updates to existing keys
-    //     #[test]
-    //     fn prop_update_values(
-    //         key: Vec<u8>,
-    //         value1: Vec<u8>,
-    //         value2: Vec<u8>
-    //     ) {
-    //         let mut map: OpenHashMap<_, _, _, _, Vec<u8>, Vec<u8>> = OpenHashMap::default();
-
-    //         map.insert(key.clone(), value1);
-    //         map.insert(key.clone(), value2.clone());
-
-    //         let result = map.get(&key);
-    //         prop_assert_eq!(
-    //             result,
-    //             Some(value2.as_ref()),
-    //             "Failed to update key: {}",
-    //             debug_bytes(&key)
-    //         );
-    //     }
-    // }
+    #[test]
+    fn it_s_a_hash_map_1() {
+        let mut expected = HashMap::new();
+        expected.insert(vec![225, 211, 10, 64, 102, 152], vec![173, 231, 92]);
+        expected.insert(vec![227, 209, 20, 158, 58, 22, 107, 62], vec![77]);
+        expected.insert(
+            vec![140, 134, 67, 127, 34, 190],
+            vec![144, 189, 239, 135, 30],
+        );
+        expected.insert(vec![206, 143, 221], vec![253, 107, 93, 29, 207]);
+        expected.insert(vec![182, 46, 63, 120], vec![110, 233, 124, 103]);
+        check_prop(expected);
+    }
 }

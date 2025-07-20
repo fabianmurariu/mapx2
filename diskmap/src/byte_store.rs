@@ -19,9 +19,8 @@ impl ByteStore for Vec<u8> {
     }
 
     fn grow_new_empty(&self, additional: usize) -> Self {
-        let mut new_vec = Vec::with_capacity((self.len() + additional).next_power_of_two());
-        new_vec.resize(new_vec.len() + additional, 0);
-        new_vec
+        let len = (self.len() + additional).next_power_of_two();
+        vec![0u8; len]
     }
 }
 

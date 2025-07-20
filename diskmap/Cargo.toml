@@ -8,6 +8,7 @@ resolver = "3"
 modular-bitfield.workspace = true
 bytemuck = { workspace = true, features = ["derive"] }
 memmap2.workspace = true
+rustc-hash.workspace = true
 
 [dev-dependencies]
 bytemuck.workspace = true
