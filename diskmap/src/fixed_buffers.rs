@@ -32,6 +32,10 @@ where
         }
     }
 
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
     fn store_offsets(&self) -> (usize, usize) {
         let size_of_t = std::mem::size_of::<T>();
         let start = 0; // Start at the beginning of the store

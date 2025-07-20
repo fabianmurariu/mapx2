@@ -1,4 +1,4 @@
-use std::hash::{BuildHasher, Hash, Hasher, RandomState};
+use std::hash::{BuildHasher, RandomState};
 use std::marker::PhantomData;
 
 use crate::fixed_buffers::FixedVec;
@@ -36,7 +36,7 @@ impl<K: AsRef<[u8]>, V: AsRef<[u8]>> Default
 {
     fn default() -> Self {
         let entry_cap = 16 * std::mem::size_of::<Entry>();
-        Self::new(Vec::with_capacity(entry_cap), Vec::new(), Vec::new(), 16)
+        Self::new(Vec::with_capacity(entry_cap), Vec::new(), Vec::new())
     }
 }
 
@@ -50,16 +50,11 @@ where
     S: BuildHasher + Default,
 {
     /// Creates a new OpenHashMap with the given initial capacity and hash/equality functions
-    pub fn new(
-        entry_store: EBs,
-        keys_store: KBs,
-        values_store: VBs,
-        initial_capacity: usize,
-    ) -> Self {
+    pub fn new(entry_store: EBs, keys_store: KBs, values_store: VBs) -> Self {
         let keys = Buffers::new(keys_store);
         let values = Buffers::new(values_store);
         let entries = FixedVec::new(entry_store);
-        let capacity = initial_capacity.max(16).next_power_of_two();
+        let capacity = entries.capacity();
 
         Self {
             keys,
@@ -70,16 +65,6 @@ where
             hasher: S::default(),
             _marker: PhantomData,
         }
-    }
-
-    /// Creates a new OpenHashMap with default hash and equality functions
-    pub fn with_capacity(
-        entry_store: EBs,
-        keys_store: KBs,
-        values_store: VBs,
-        initial_capacity: usize,
-    ) -> Self {
-        Self::new(entry_store, keys_store, values_store, initial_capacity)
     }
 
     /// Returns the number of key-value pairs in the map
@@ -116,7 +101,7 @@ where
     /// if the key is found, returns Some(index),
     /// if the key is not found return the first empty slot index
     fn find_slot(&self, key: &[u8]) -> Result<usize, usize> {
-        if self.is_empty() {
+        if self.entries.is_empty() {
             return Err(self.len());
         }
 
@@ -124,10 +109,14 @@ where
         let index = hash % self.capacity;
 
         // Linear probing
-        for entry in &self.entries[index..self.capacity()] {
+        for (index, entry) in self.entries[index..self.capacity()]
+            .iter()
+            .enumerate()
+            .map(|(i, e)| (i + index, e))
+        {
             if entry.is_empty() {
                 // Empty slot, key not found
-                return Err(entry.key_pos());
+                return Err(index);
             }
 
             if entry.is_deleted() {
@@ -189,7 +178,7 @@ where
     }
 
     fn grow(&mut self) {
-        let new_capacity = self.capacity * 2;
+        let new_capacity = if self.capacity == 0 { 8 } else { self.capacity } * 2;
         let mut new_entries = self.entries.new_empty(new_capacity);
         // need a way to rehash all existing entries
         for entry in self.entries.iter() {
