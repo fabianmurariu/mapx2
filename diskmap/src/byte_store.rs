@@ -11,16 +11,58 @@ pub trait ByteStore: AsRef<[u8]> + AsMut<[u8]> {
     // the new store should be empty
     // and have enough capacity to hold the current size + additional
     fn grow_new_empty(&self, additional: usize) -> Self;
+
+    // returns the number of resize events
+    fn stats(&self) -> u64;
 }
 
-impl ByteStore for Vec<u8> {
+#[derive(Debug, Clone, Default)]
+pub struct VecStore {
+    vec: Vec<u8>,
+    resizes: u64,
+}
+
+impl VecStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            vec: Vec::with_capacity(capacity),
+            resizes: 0,
+        }
+    }
+}
+
+impl AsRef<[u8]> for VecStore {
+    fn as_ref(&self) -> &[u8] {
+        &self.vec
+    }
+}
+
+impl AsMut<[u8]> for VecStore {
+    fn as_mut(&mut self) -> &mut [u8] {
+        &mut self.vec
+    }
+}
+
+impl ByteStore for VecStore {
     fn grow(&mut self, additional: usize) {
-        self.resize(self.len() + additional, 0);
+        self.resizes += 1;
+        self.vec.resize(self.vec.len() + additional, 0);
     }
 
     fn grow_new_empty(&self, additional: usize) -> Self {
-        let len = (self.len() + additional).next_power_of_two();
-        vec![0u8; len]
+        let len = (self.vec.len() + additional).next_power_of_two();
+        Self {
+            vec: vec![0u8; len],
+            resizes: 0,
+        }
+    }
+
+    fn stats(&self) -> u64 {
+        self.resizes
     }
 }
 
@@ -31,8 +73,12 @@ impl<const N: usize> ByteStore for [u8; N] {
         panic!("Cannot grow fixed size arrays")
     }
 
-    fn grow_new_empty(&self, additional: usize) -> Self {
+    fn grow_new_empty(&self, _additional: usize) -> Self {
         panic!("can't add additional to fixed size N")
+    }
+
+    fn stats(&self) -> u64 {
+        0
     }
 }
 
@@ -52,6 +98,10 @@ impl ByteStore for Box<[u8]> {
 
         vec![0u8; new_len].into_boxed_slice()
     }
+
+    fn stats(&self) -> u64 {
+        0 // Not tracked for Box<[u8]> directly
+    }
 }
 
 pub struct MMapFile {
@@ -59,6 +109,7 @@ pub struct MMapFile {
     file: File,
     path: std::path::PathBuf,
     idx: usize,
+    resizes: u64,
 }
 
 impl MMapFile {
@@ -95,6 +146,7 @@ impl MMapFile {
             file,
             idx,
             path,
+            resizes: 0,
         })
     }
 }
@@ -113,6 +165,7 @@ impl AsMut<[u8]> for MMapFile {
 
 impl ByteStore for MMapFile {
     fn grow(&mut self, additional: usize) {
+        self.resizes += 1;
         // Flush and fsync current changes
         self.mmap
             .flush()
@@ -166,6 +219,10 @@ impl ByteStore for MMapFile {
             });
 
         new_file
+    }
+
+    fn stats(&self) -> u64 {
+        self.resizes
     }
 }
 

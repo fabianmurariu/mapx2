@@ -14,8 +14,9 @@ use std::{mem::size_of, ops::Index};
 ///
 /// ```
 /// use diskmap::Buffers;
+/// use diskmap::byte_store::VecStore;
 ///
-/// let mut store = Buffers::new(vec![0u8; 1024]);
+/// let mut store = Buffers::new(VecStore::with_capacity(1024));
 ///
 /// // Add some data
 /// let idx1 = store.append(b"hello");
@@ -164,12 +165,16 @@ where
 impl<T: ByteStore> Buffers<T> {
     /// Create a new ByteStore with the given buffer
     pub fn new(byte_store: T) -> Self {
-        let data_end = byte_store.as_ref().len();
+        let len = byte_store.as_ref().len();
         Self {
             byte_store,
             count: 0,
-            data_end,
+            data_end: len,
         }
+    }
+
+    pub fn store(&self) -> &T {
+        &self.byte_store
     }
 
     /// Create a slice of the buffers from [start, end)
@@ -194,65 +199,33 @@ impl<T: ByteStore> Buffers<T> {
         let offset_size = size_of::<usize>();
         let needed_space = offset_size + bytes.len();
 
-        // Check if we have enough space, if not, grow the buffer
-        loop {
-            let offsets_end = self.offsets_end();
-            if offsets_end + needed_space <= self.data_end {
-                break; // We have enough space
-            }
-
-            // Grow the buffer and move existing data
-            let old_len = self.byte_store.as_ref().len();
-            let old_data_end = self.data_end;
-            let data_size = old_len - old_data_end;
-
-            // Grow the buffer directly to accommodate the new data
-            let buffer_len = self.byte_store.as_ref().len();
-            let free_space = self.free_space();
-            let additional_space = (free_space + needed_space)
-                .next_power_of_two()
-                .max(buffer_len * 2);
-            self.byte_store.grow(additional_space);
+        if self.free_space() < needed_space {
+            let old_data = self.byte_store.as_ref()[self.data_end..].to_vec();
+            let current_len = self.byte_store.as_ref().len();
+            let growth = needed_space
+                .saturating_sub(self.free_space())
+                .max(current_len)
+                .max(128);
+            self.byte_store.grow(growth);
 
             let new_len = self.byte_store.as_ref().len();
-            let new_data_end = new_len - data_size;
-
-            // Move existing data from old position to new position
-            if data_size > 0 {
-                let buffer = self.byte_store.as_mut();
-                // Copy data from [old_data_end..old_len] to [new_data_end..new_len]
-                buffer.copy_within(old_data_end..old_len, new_data_end);
-                // Zero out the old data area
-                buffer[old_data_end..new_data_end].fill(0);
-
-                // Offsets don't need updating! They're relative to buffer end
+            let new_data_end = new_len - old_data.len();
+            if !old_data.is_empty() {
+                self.byte_store.as_mut()[new_data_end..].copy_from_slice(&old_data);
             }
-
-            // Update data_end
             self.data_end = new_data_end;
         }
 
-        // Calculate new data position
-        let new_data_end = self.data_end - bytes.len();
+        self.data_end -= bytes.len();
+        self.byte_store.as_mut()[self.data_end..self.data_end + bytes.len()].copy_from_slice(bytes);
 
-        // Write the data at the end
-        let buffer = self.byte_store.as_mut();
-        buffer[new_data_end..self.data_end].copy_from_slice(bytes);
-
-        // Calculate cumulative length from buffer end
-        let buffer_len = buffer.len();
-        let cumulative_length = buffer_len - new_data_end;
-
-        // Write the cumulative offset at the beginning
         let offset_pos = self.count * offset_size;
-        let offset_bytes = cumulative_length.to_le_bytes();
-        buffer[offset_pos..offset_pos + offset_size].copy_from_slice(&offset_bytes);
+        let cumulative_len = self.byte_store.as_ref().len() - self.data_end;
+        self.byte_store.as_mut()[offset_pos..offset_pos + offset_size]
+            .copy_from_slice(&cumulative_len.to_le_bytes());
 
-        // Update state
         let index = self.count;
         self.count += 1;
-        self.data_end = new_data_end;
-
         index
     }
 
@@ -317,7 +290,7 @@ impl<T: ByteStore> Buffers<T> {
     #[allow(clippy::implicit_saturating_sub)]
     pub fn free_space(&self) -> usize {
         let offsets_end = self.offsets_end();
-        if self.data_end > offsets_end {
+        if self.data_end >= offsets_end {
             self.data_end - offsets_end
         } else {
             0
@@ -346,7 +319,7 @@ where
 mod tests {
 
     use super::*;
-    use crate::byte_store::{ByteStore, MMapFile};
+    use crate::byte_store::{ByteStore, MMapFile, VecStore};
     use proptest::prelude::*;
 
     #[cfg(test)]
@@ -360,7 +333,9 @@ mod tests {
                 #[test]
                 fn [<$name _vec_backend>]() {
                     let size = $size;
-                    let buffers = Buffers::new(vec![0u8; size]);
+                    let mut s = VecStore::new();
+                    s.grow(size);
+                    let buffers = Buffers::new(s);
                     [<check_ $name>](buffers);
                 }
 
@@ -473,7 +448,9 @@ mod tests {
                 0..50
             )
         ) {
-            let mut store = Buffers::new(vec![0u8; 8192]);
+            let mut s = VecStore::new();
+            s.grow(8192);
+            let mut store = Buffers::new(s);
             let mut indices = Vec::new();
 
             // Store all data (will auto-grow as needed)
@@ -555,7 +532,9 @@ mod tests {
                 1..30
             )
         ) {
-            let mut store = Buffers::new(vec![0u8; 4096]);
+            let mut s = VecStore::new();
+            s.grow(4096);
+            let mut store = Buffers::new(s);
             for data in &data_list {
                 store.append(data);
             }
@@ -581,7 +560,9 @@ mod tests {
                 5..20
             )
         ) {
-            let mut store = Buffers::new(vec![0u8; 2048]);
+            let mut s = VecStore::new();
+            s.grow(2048);
+            let mut store = Buffers::new(s);
             for data in &data_list {
                 store.append(data);
             }
@@ -600,7 +581,9 @@ mod tests {
         fn prop_test_store_bounds(
             data in prop::collection::vec(any::<u8>(), 1..1000)
         ) {
-            let mut store = Buffers::new(vec![0u8; 1024]);
+            let mut s = VecStore::new();
+            s.grow(8192);
+            let mut store = Buffers::new(s);
 
             // Store the data (will auto-grow if needed)
             let idx = store.append(&data);
@@ -620,7 +603,9 @@ mod tests {
             ),
             access_indices in prop::collection::vec(any::<usize>(), 0..30)
         ) {
-            let mut store = Buffers::new(vec![0u8; 4096]);
+            let mut s = VecStore::new();
+            s.grow(8192);
+            let mut store = Buffers::new(s);
 
             // Store data (will auto-grow as needed)
             let mut valid_indices = Vec::new();
@@ -652,7 +637,9 @@ mod tests {
             )
         ) {
             let buffer_size = 1024;
-            let mut store = Buffers::new(vec![0u8; buffer_size]);
+            let mut s = VecStore::new();
+            s.grow(buffer_size);
+            let mut store = Buffers::new(s);
             let initial_free_space = store.free_space();
             prop_assert_eq!(initial_free_space, buffer_size);
 
@@ -675,7 +662,9 @@ mod tests {
 
     #[test]
     fn test_exact_interface_requirements() {
-        let mut store = Buffers::new(vec![0u8; 1024]);
+        let mut s = VecStore::new();
+        s.grow(8192);
+        let mut store = Buffers::new(s);
 
         // Test the exact interface: append(&mut self, bytes: &[u8]) -> usize
         let data1 = b"first";
@@ -702,7 +691,9 @@ mod tests {
 
     #[test]
     fn test_offset_system_understanding() {
-        let mut store = Buffers::new(vec![0u8; 64]);
+        let mut s = VecStore::new();
+        s.grow(64);
+        let mut store = Buffers::new(s);
 
         // Add some data to understand how offsets work
         let data1 = b"hello"; // 5 bytes
@@ -739,7 +730,9 @@ mod tests {
 
     #[test]
     fn test_offset_system_with_growth() {
-        let mut store = Buffers::new(vec![0u8; 32]);
+        let mut s = VecStore::new();
+        s.grow(32);
+        let mut store = Buffers::new(s);
 
         // Add data that will trigger growth
         let data1 = b"first";
@@ -776,53 +769,29 @@ mod tests {
 
     #[test]
     fn test_detailed_offset_analysis() {
-        // This test demonstrates the CURRENT system vs what you expected
-        let mut store = Buffers::new(vec![0u8; 32]);
+        let mut store = Buffers::new(VecStore::new());
 
-        // Add first piece of data
-        let data1 = b"AAAA"; // 4 bytes
+        let data1 = b"AAAA";
         let idx1 = store.append(data1);
-        let offset1 = store.get_cumulative_offset(idx1).unwrap();
+        assert_eq!(store.get(idx1).unwrap(), data1);
 
-        // New system: offset is cumulative length from buffer end
-        // With 32-byte buffer and 4-byte data:
-        // Layout: [8-byte offset][24 bytes free][4 bytes data]
-        // offset1 should be 4 (cumulative length from end)
-        assert_eq!(offset1, 4); // Cumulative length: just data1
-        assert_eq!(store.data_end, 28); // data_end tracks where next data goes
-
-        // Add second piece of data
-        let data2 = b"BBBB"; // 4 bytes
+        let data2 = b"BBBB";
         let idx2 = store.append(data2);
-        let offset2 = store.get_cumulative_offset(idx2).unwrap();
-
-        // Now layout: [8-byte offset1][8-byte offset2][16 bytes free][4 bytes data2][4 bytes data1]
-        // offset2 should be 8 (cumulative length: data1 + data2)
-        assert_eq!(offset2, 8); // Cumulative length: data1 + data2
-        assert_eq!(store.data_end, 24);
-
-        // The NEW SYSTEM:
-        // - Offsets are cumulative lengths from end: [4, 8]
-        // - When buffer grows, only data moves, offsets stay the same!
-        // - Much simpler and more efficient!
-
-        // Force growth by adding data that won't fit
-        let large_data = vec![b'X'; 20]; // This should trigger growth
-        let idx3 = store.append(&large_data);
-
-        // After growth, the original offsets should NOT have changed!
-        let offset1_after = store.get_cumulative_offset(idx1).unwrap();
-        let offset2_after = store.get_cumulative_offset(idx2).unwrap();
-        let offset3_after = store.get_cumulative_offset(idx3).unwrap();
-
-        // Offsets stay the same because they're relative to buffer end
-        assert_eq!(offset1_after, offset1); // Still 4 bytes from end
-        assert_eq!(offset2_after, offset2); // Still 8 bytes from end
-        assert_eq!(offset3_after, 28); // data1 + data2 + data3 = 4 + 4 + 20 = 28
-
-        // Data is still retrievable correctly
         assert_eq!(store.get(idx1).unwrap(), data1);
         assert_eq!(store.get(idx2).unwrap(), data2);
-        assert_eq!(store.get(idx3).unwrap(), &large_data);
+
+        let large_data = vec![b'X'; 200];
+        let idx3 = store.append(&large_data);
+        assert_eq!(store.get(idx1).unwrap(), data1);
+        assert_eq!(store.get(idx2).unwrap(), data2);
+        assert_eq!(store.get(idx3).unwrap(), large_data.as_slice());
+
+        let offset1 = store.get_cumulative_offset(idx1).unwrap();
+        let offset2 = store.get_cumulative_offset(idx2).unwrap();
+        let offset3 = store.get_cumulative_offset(idx3).unwrap();
+
+        assert_eq!(offset1, data1.len());
+        assert_eq!(offset2, data1.len() + data2.len());
+        assert_eq!(offset3, data1.len() + data2.len() + large_data.len());
     }
 }

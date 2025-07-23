@@ -36,6 +36,10 @@ where
         self.capacity
     }
 
+    pub fn store(&self) -> &S {
+        &self.store
+    }
+
     fn store_offsets(&self) -> (usize, usize) {
         let size_of_t = std::mem::size_of::<T>();
         let start = 0; // Start at the beginning of the store
@@ -90,19 +94,15 @@ where
     }
 
     pub fn grow(&mut self) {
-        let t_size = std::mem::size_of::<T>();
-        self.reserve(self.capacity * t_size);
-        self.capacity *= 2; // Double the capacity
+        let additional = self.capacity.max(8);
+        self.reserve(additional);
     }
 
     /// Resizes the FixedVec to the new length, filling new elements with the given value.
     pub fn resize(&mut self, new_len: usize) {
         if new_len > self.capacity {
-            let new_capacity = new_len.next_power_of_two();
-            let t_size = std::mem::size_of::<T>();
-            let additional = (new_capacity - self.capacity) * t_size;
-            self.store.grow(additional);
-            self.capacity = self.store.as_ref().len() / t_size;
+            let additional = new_len.saturating_sub(self.capacity);
+            self.reserve(additional);
         }
 
         let current_len = self.len;
@@ -144,12 +144,13 @@ impl<T: Pod, S: ByteStore> DerefMut for FixedVec<T, S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::byte_store::VecStore;
     use proptest::prelude::*;
 
     #[test]
     fn test_basic_operations_vec() {
-        let backing = vec![0u8; 40];
-        let mut vec = FixedVec::<u32, Vec<u8>>::new(backing);
+        let backing = VecStore::with_capacity(40);
+        let mut vec = FixedVec::<u32, _>::new(backing);
         assert_eq!(vec.len(), 0);
 
         vec.push(42);
@@ -166,8 +167,8 @@ mod tests {
 
     #[test]
     fn test_resize() {
-        let backing = vec![0u8; 40];
-        let mut vec = FixedVec::<u32, Vec<u8>>::new(backing);
+        let backing = VecStore::with_capacity(40);
+        let mut vec = FixedVec::<u32, _>::new(backing);
         assert_eq!(vec.len(), 0);
         vec.resize(5);
         assert_eq!(vec.len(), 5);
@@ -178,8 +179,8 @@ mod tests {
 
     #[test]
     fn test_resize_out_of_bounds() {
-        let backing = vec![0u8; 40];
-        let mut vec = FixedVec::<u32, Vec<u8>>::new(backing);
+        let backing = VecStore::with_capacity(40);
+        let mut vec = FixedVec::<u32, _>::new(backing);
         // This should not panic, it should grow the underlying store
         vec.resize(11);
         vec[10] = 42;
@@ -188,9 +189,9 @@ mod tests {
 
     #[test]
     fn test_resize_exceeds_capacity() {
-        let backing = vec![0u8; 40];
-        let mut vec = FixedVec::<u32, Vec<u8>>::new(backing);
-        assert_eq!(vec.capacity, 40 / 4);
+        let backing = VecStore::with_capacity(40);
+        let mut vec = FixedVec::<u32, _>::new(backing);
+        assert_eq!(vec.capacity, 0);
         vec.resize(21);
         vec[20] = 123;
         assert_eq!(vec[20], 123);
@@ -199,8 +200,8 @@ mod tests {
     proptest! {
         #[test]
         fn prop_test_store_retrieval(index in 0usize..10, value in any::<u32>()) {
-            let backing = vec![0u8; 40];
-            let mut vec = FixedVec::<u32, Vec<u8>>::new(backing);
+            let backing = VecStore::with_capacity(40);
+            let mut vec = FixedVec::<u32, _>::new(backing);
             vec.resize(index + 1);
             vec[index] = value;
             prop_assert_eq!(vec[index], value);
@@ -208,8 +209,8 @@ mod tests {
 
         #[test]
         fn prop_test_resize_behavior(new_len in 0usize..10) {
-            let backing = vec![0u8; 40];
-            let mut vec = FixedVec::<u32, Vec<u8>>::new(backing);
+            let backing = VecStore::with_capacity(40);
+            let mut vec = FixedVec::<u32, _>::new(backing);
             vec.resize(new_len);
             for i in 0..new_len {
                 vec[i] = 0;

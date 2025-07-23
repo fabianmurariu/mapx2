@@ -1,4 +1,5 @@
 use diskmap::Buffers;
+use diskmap::byte_store::VecStore;
 use std::collections::HashMap;
 
 fn main() {
@@ -21,8 +22,8 @@ fn main() {
 }
 
 fn demo_with_vec() {
-    println!("1. Demo with Vec<u8> backing:");
-    let mut store = Buffers::new(vec![0u8; 256]);
+    println!("1. Demo with VecStore backing:");
+    let mut store = Buffers::new(VecStore::with_capacity(256));
 
     let texts = ["Hello", "World", "Rust", "ByteStore"];
     let mut indices = Vec::new();
@@ -100,7 +101,7 @@ fn demo_with_boxed_slice() {
 
 fn demo_capacity_limits() {
     println!("4. Capacity limits demo:");
-    let mut store = Buffers::new(vec![0u8; 64]); // Small buffer
+    let mut store = Buffers::new(VecStore::with_capacity(64)); // Small buffer
 
     let mut count = 0;
     for i in 0..20 {
@@ -129,14 +130,14 @@ fn demo_kv_store() {
 
     // Build a simple KV store using ByteStore + HashMap
     struct SimpleKV {
-        store: Buffers<Vec<u8>>,
+        store: Buffers<VecStore>,
         index: HashMap<String, usize>,
     }
 
     impl SimpleKV {
         fn new(capacity: usize) -> Self {
             Self {
-                store: Buffers::new(vec![0u8; capacity]),
+                store: Buffers::new(VecStore::with_capacity(capacity)),
                 index: HashMap::new(),
             }
         }

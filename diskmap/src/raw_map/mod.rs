@@ -3,6 +3,7 @@ use std::marker::PhantomData;
 
 use rustc_hash::FxBuildHasher;
 
+use crate::byte_store::VecStore;
 use crate::fixed_buffers::FixedVec;
 use crate::raw_map::entry::Entry;
 use crate::{Buffers, ByteStore};
@@ -34,10 +35,10 @@ pub struct OpenHashMap<
 }
 
 impl<K: AsRef<[u8]>, V: AsRef<[u8]>> Default
-    for OpenHashMap<K, V, Vec<u8>, Vec<u8>, Vec<u8>, FxBuildHasher>
+    for OpenHashMap<K, V, VecStore, VecStore, VecStore, FxBuildHasher>
 {
     fn default() -> Self {
-        Self::new(Vec::new(), Vec::new(), Vec::new())
+        Self::new(VecStore::new(), VecStore::new(), VecStore::new())
     }
 }
 
@@ -115,13 +116,16 @@ where
         let hash = self.hash_key(key);
         let mut index = hash as usize % self.capacity;
 
+        // Linear probing
         for _ in 0..self.capacity {
             let entry = &self.entries[index];
             if entry.is_empty() {
+                // Empty slot, key not found
                 return Err(index);
             }
 
             if !entry.is_deleted() {
+                // Check if this is our key
                 if let Some(stored_key) = self.keys.get(entry.key_pos()) {
                     if key == stored_key {
                         return Ok(index);
@@ -161,8 +165,10 @@ where
                 let old_value_idx = entry.value_pos();
                 let new_value_idx = self.values.append(value_bytes);
 
+                // Update the value index in the entry, keeping the key pos
                 entry.set_new_kv(entry.key_pos(), new_value_idx);
 
+                // If the value was updated, return the old value index
                 Some(old_value_idx)
             }
         }
@@ -177,7 +183,8 @@ where
         let mut new_entries = self.entries.new_empty(new_capacity);
 
         // Re-hash all existing entries into the new larger array
-        for entry in self.entries.iter() {
+        for i in 0..self.capacity {
+            let entry = self.entries[i];
             if entry.is_occupied() {
                 let key_data = self
                     .keys
@@ -189,7 +196,7 @@ where
                 // Linear probing in the new_entries array
                 loop {
                     if new_entries[index].is_empty() {
-                        new_entries[index] = *entry;
+                        new_entries[index] = entry;
                         break;
                     }
                     index = (index + 1) % new_capacity;
@@ -214,6 +221,14 @@ where
             None
         }
     }
+
+    pub fn stats(&self) -> (u64, u64, u64) {
+        (
+            self.entries.store().stats(),
+            self.keys.store().stats(),
+            self.values.store().stats(),
+        )
+    }
 }
 
 #[cfg(test)]
@@ -223,15 +238,15 @@ mod tests {
     use rustc_hash::FxBuildHasher;
     use std::collections::HashMap;
 
-    type OHM<K, V> = OpenHashMap<K, V, Vec<u8>, Vec<u8>, Vec<u8>, FxBuildHasher>;
+    type OHM<K, V> = OpenHashMap<K, V, VecStore, VecStore, VecStore, FxBuildHasher>;
 
     // Basic functionality tests
     #[test]
     fn test_insert_and_get() {
-        let mut map: OHM<&[u8], &[u8]> = OpenHashMap::default();
+        let mut map: OHM<Vec<u8>, Vec<u8>> = OpenHashMap::default();
 
         // Insert a key-value pair
-        map.insert(b"hello", b"world");
+        map.insert(b"hello".to_vec(), b"world".to_vec());
 
         // Get the value
         let value = map.get(b"hello");
@@ -276,7 +291,7 @@ mod tests {
 
     #[test]
     fn test_empty_map() {
-        let map: OHM<&[u8], &[u8]> = OpenHashMap::default();
+        let map: OHM<Vec<u8>, Vec<u8>> = OpenHashMap::default();
 
         // Map should be empty
         assert_eq!(map.len(), 0);
@@ -399,5 +414,57 @@ mod tests {
         }
 
         check_prop(expected);
+    }
+
+    #[test]
+    fn test_no_resize_with_preallocation() {
+        let mut entry_store = VecStore::new();
+        entry_store.grow(256 * std::mem::size_of::<entry::Entry>());
+        let mut key_store = VecStore::new();
+        key_store.grow(20 * 1024);
+        let mut value_store = VecStore::new();
+        value_store.grow(20 * 1024);
+
+        // The stores have been resized once to pre-allocate space.
+        assert_eq!(entry_store.stats(), 1);
+        assert_eq!(key_store.stats(), 1);
+        assert_eq!(value_store.stats(), 1);
+
+        let mut map: OpenHashMap<Vec<u8>, Vec<u8>, _, _, _, FxBuildHasher> =
+            OpenHashMap::new(entry_store, key_store, value_store);
+
+        let initial_stats = map.stats();
+        assert_eq!(initial_stats, (1, 1, 1));
+
+        // Insert 100 elements. Should not trigger any more resizes.
+        for i in 0..100 {
+            let s = i.to_string();
+            map.insert(s.clone().into_bytes(), s.into_bytes());
+        }
+        assert_eq!(
+            map.stats(),
+            initial_stats,
+            "No resize should happen with pre-allocation"
+        );
+
+        // Insert more elements to trigger a resize of the entries container.
+        for i in 100..150 {
+            let s = i.to_string();
+            map.insert(s.clone().into_bytes(), s.into_bytes());
+        }
+
+        let (entries_resizes, keys_resizes, values_resizes) = map.stats();
+        assert_eq!(
+            entries_resizes, 0,
+            "entries store is replaced, so stats are reset"
+        );
+        assert_eq!(
+            keys_resizes, initial_stats.1,
+            "keys store should not resize"
+        );
+        assert_eq!(
+            values_resizes, initial_stats.2,
+            "values store should not resize"
+        );
     }
 }
