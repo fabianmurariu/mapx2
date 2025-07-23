@@ -115,6 +115,7 @@ where
             .iter()
             .enumerate()
             .map(|(i, e)| (i + index, e))
+            .chain(self.entries[..index].iter().enumerate())
         {
             if entry.is_empty() {
                 // Empty slot, key not found
@@ -133,7 +134,7 @@ where
             }
         }
 
-        Err(self.len())
+        Err(self.capacity())
     }
 
     /// Insert a key-value pair into the map
@@ -147,7 +148,7 @@ where
         let value_bytes = v.as_ref();
 
         match self.find_slot(key_bytes) {
-            Err(slot_idx) if slot_idx == self.len() => {
+            Err(slot_idx) if slot_idx == self.capacity() => {
                 // need to resize, we double the capacity of the entries array
                 self.grow();
                 // insert the new key-value pair
@@ -305,9 +306,9 @@ mod tests {
     #[test]
     fn it_s_a_hash_map() {
         let small_hash_map_prop = proptest::collection::hash_map(
-            proptest::collection::vec(0u8..255, 1..10),
-            proptest::collection::vec(0u8..255, 1..10),
-            1..10,
+            proptest::collection::vec(0u8..255, 1..2),
+            proptest::collection::vec(0u8..255, 1..2),
+            1..100,
         );
 
         proptest!(|(values in small_hash_map_prop)|{
@@ -326,6 +327,78 @@ mod tests {
         );
         expected.insert(vec![206, 143, 221], vec![253, 107, 93, 29, 207]);
         expected.insert(vec![182, 46, 63, 120], vec![110, 233, 124, 103]);
+        check_prop(expected);
+    }
+
+    #[test]
+    fn it_s_a_hash_map_2() {
+        let mut expected = HashMap::new();
+        let kvs = vec![
+            (vec![6], vec![0]),
+            (vec![214], vec![252]),
+            (vec![44], vec![0]),
+            (vec![113], vec![160]),
+            (vec![116], vec![15]),
+            (vec![67], vec![42]),
+            (vec![12], vec![0]),
+            (vec![191], vec![172]),
+            (vec![209], vec![119]),
+            (vec![11], vec![0]),
+            (vec![254], vec![104]),
+            (vec![121], vec![0]),
+            (vec![117], vec![174]),
+            (vec![38], vec![79]),
+            (vec![94], vec![66]),
+            (vec![16], vec![0]),
+            (vec![89], vec![167]),
+            (vec![112], vec![195]),
+            (vec![91], vec![18]),
+            (vec![23], vec![0]),
+            (vec![58], vec![0]),
+            (vec![32], vec![118]),
+            (vec![198], vec![47]),
+            (vec![18], vec![0]),
+            (vec![120], vec![0]),
+            (vec![0], vec![0]),
+            (vec![24], vec![0]),
+            (vec![7], vec![0]),
+            (vec![15], vec![0]),
+            (vec![22], vec![0]),
+            (vec![13], vec![0]),
+            (vec![102], vec![182]),
+            (vec![253], vec![68]),
+            (vec![139], vec![250]),
+            (vec![43], vec![0]),
+            (vec![14], vec![0]),
+            (vec![8], vec![0]),
+            (vec![88], vec![175]),
+            (vec![195], vec![150]),
+            (vec![41], vec![0]),
+            (vec![5], vec![46]),
+            (vec![10], vec![0]),
+            (vec![119], vec![0]),
+            (vec![239], vec![34]),
+            (vec![17], vec![0]),
+            (vec![42], vec![0]),
+            (vec![40], vec![213]),
+            (vec![1], vec![0]),
+            (vec![9], vec![0]),
+            (vec![140], vec![14]),
+            (vec![31], vec![51]),
+            (vec![57], vec![154]),
+            (vec![19], vec![102]),
+            (vec![238], vec![198]),
+            (vec![129], vec![15]),
+            (vec![141], vec![0]),
+            (vec![33], vec![0]),
+            (vec![95], vec![74]),
+            (vec![21], vec![162]),
+        ];
+
+        for (k, v) in kvs {
+            expected.insert(k, v);
+        }
+
         check_prop(expected);
     }
 }
