@@ -2,6 +2,7 @@ use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use diskmap::byte_store::MMapFile;
 use diskmap::raw_map::OpenHashMap;
 use rustc_hash::FxBuildHasher;
+use sled;
 use std::collections::HashMap;
 use tempfile::tempdir;
 
@@ -104,6 +105,35 @@ fn benchmark_hash_map_comparisons(c: &mut Criterion) {
         b.iter(|| {
             for (k, _) in data.iter() {
                 ohm_mmap_map.get(black_box(k));
+            }
+        })
+    });
+
+    // --- Sled DB ---
+    group.bench_function("Sled - insert", |b| {
+        b.iter_with_setup(
+            || tempdir().unwrap(),
+            |dir| {
+                let db = sled::open(dir.path()).unwrap();
+                for (k, v) in data.iter() {
+                    db.insert(black_box(k.as_slice()), black_box(v.as_slice()))
+                        .unwrap();
+                }
+                db.flush().unwrap();
+            },
+        )
+    });
+
+    let sled_dir_get = tempdir().unwrap();
+    let sled_db = sled::open(sled_dir_get.path()).unwrap();
+    for (k, v) in data.iter() {
+        sled_db.insert(k, v.as_slice()).unwrap();
+    }
+    sled_db.flush().unwrap();
+    group.bench_function("Sled - get", |b| {
+        b.iter(|| {
+            for (k, _) in data.iter() {
+                black_box(sled_db.get(black_box(k)).unwrap());
             }
         })
     });

@@ -16,3 +16,4 @@ modular-bitfield = "0.12.0"
 paste = "1.0.15"
 rustc-hash = "2.1.1"
 criterion = { version = "0.5", features = ["html_reports"] }
+sled = "0.34.7"
