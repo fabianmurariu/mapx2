@@ -1,5 +1,5 @@
 mod buffers;
-mod byte_store;
+pub mod byte_store;
 mod fixed_buffers;
 pub mod raw_map;
 pub use buffers::Buffers;

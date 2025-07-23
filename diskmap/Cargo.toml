@@ -11,7 +11,12 @@ memmap2.workspace = true
 rustc-hash.workspace = true
 
 [dev-dependencies]
+criterion = { workspace = true }
 bytemuck.workspace = true
 proptest = { workspace = true }
 tempfile = { workspace = true }
 paste.workspace = true
+
+[[bench]]
+name = "hash_map_comparison"
+harness = false
