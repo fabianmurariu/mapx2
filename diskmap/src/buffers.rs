@@ -200,19 +200,41 @@ impl<T: ByteStore> Buffers<T> {
         let needed_space = offset_size + bytes.len();
 
         if self.free_space() < needed_space {
-            let old_data = self.byte_store.as_ref()[self.data_end..].to_vec();
-            let current_len = self.byte_store.as_ref().len();
-            let growth = needed_space
-                .saturating_sub(self.free_space())
-                .max(current_len)
-                .max(128);
-            self.byte_store.grow(growth);
+            let old_len = self.byte_store.as_ref().len();
+            let data_len = old_len - self.data_end;
 
-            let new_len = self.byte_store.as_ref().len();
-            let new_data_end = new_len - old_data.len();
-            if !old_data.is_empty() {
-                self.byte_store.as_mut()[new_data_end..].copy_from_slice(&old_data);
+            // To avoid frequent resizes, we double the buffer's capacity. This greedy
+            // approach ensures that `copy_within` can safely move data without overwriting
+            // existing contents. The offsets remain at the front, while data is shifted
+            // to the back.
+            let mut new_len = if old_len == 0 { 256 } else { old_len * 2 };
+
+            // Ensure the new length is sufficient for the new data, existing data, and offsets.
+            let required_len = self.offsets_end() + data_len + needed_space;
+            if new_len < required_len {
+                new_len = required_len;
             }
+
+            // `grow` expects the additional size, not the new total size.
+            let growth = new_len - old_len;
+            self.byte_store.grow(growth);
+            let new_actual_len = self.byte_store.as_ref().len();
+
+            // Calculate the new starting position for the data block, which is at the end.
+            let new_data_end = new_actual_len - data_len;
+
+            // Move the existing data to the end of the newly allocated space.
+            // `copy_within` is efficient as it avoids a temporary allocation (like `to_vec`),
+            // which is critical for memory-mapped files. The data is moved from its old
+            // position to the end of the new buffer. This is safe because the destination
+            // is guaranteed not to conflict with the source.
+            if data_len > 0 {
+                self.byte_store
+                    .as_mut()
+                    .copy_within(self.data_end..old_len, new_data_end);
+            }
+
+            // Update the pointer to the start of the data section.
             self.data_end = new_data_end;
         }
 
