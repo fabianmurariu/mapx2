@@ -144,28 +144,26 @@ where
         let key_bytes = k.as_ref();
         let value_bytes = v.as_ref();
 
-        loop {
-            match self.find_slot(key_bytes) {
-                Err(slot_idx) => {
-                    // Found an empty slot, insert new key-value pair
-                    let key_idx = self.keys.append(key_bytes);
-                    let value_idx = self.values.append(value_bytes);
+        match self.find_slot(key_bytes) {
+            Err(slot_idx) => {
+                // Found an empty slot, insert new key-value pair
+                let key_idx = self.keys.append(key_bytes);
+                let value_idx = self.values.append(value_bytes);
 
-                    self.entries[slot_idx] = Entry::occupied_at_pos(key_idx, value_idx);
-                    self.size += 1;
+                self.entries[slot_idx] = Entry::occupied_at_pos(key_idx, value_idx);
+                self.size += 1;
 
-                    return Some(slot_idx);
-                }
-                Ok(slot_idx) => {
-                    // Key already exists, update value
-                    let entry = &mut self.entries[slot_idx];
-                    let old_value_idx = entry.value_pos();
-                    let new_value_idx = self.values.append(value_bytes);
+                Some(slot_idx)
+            }
+            Ok(slot_idx) => {
+                // Key already exists, update value
+                let entry = &mut self.entries[slot_idx];
+                let old_value_idx = entry.value_pos();
+                let new_value_idx = self.values.append(value_bytes);
 
-                    entry.set_new_kv(entry.key_pos(), new_value_idx);
+                entry.set_new_kv(entry.key_pos(), new_value_idx);
 
-                    return Some(old_value_idx);
-                }
+                Some(old_value_idx)
             }
         }
     }
