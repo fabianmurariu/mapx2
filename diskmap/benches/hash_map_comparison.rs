@@ -1,5 +1,5 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use diskmap::byte_store::MMapFile;
+use diskmap::byte_store::{MMapFile, VecStore};
 use diskmap::raw_map::OpenHashMap;
 use rustc_hash::FxBuildHasher;
 use sled;
@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use tempfile::tempdir;
 
 // Type alias for our Vec-backed OpenHashMap
-type OpenHashMapVec<K, V> = OpenHashMap<K, V, Vec<u8>, Vec<u8>, Vec<u8>, FxBuildHasher>;
+type OpenHashMapVec<K, V> = OpenHashMap<K, V, VecStore, VecStore, VecStore, FxBuildHasher>;
 // Type alias for our Mmap-backed OpenHashMap
 type OpenHashMapMmap<K, V> = OpenHashMap<K, V, MMapFile, MMapFile, MMapFile, FxBuildHasher>;
 
@@ -51,14 +51,16 @@ fn benchmark_hash_map_comparisons(c: &mut Criterion) {
     // --- OpenHashMap with Vec<u8> backing ---
     group.bench_function("OpenHashMap<Vec> - insert", |b| {
         b.iter(|| {
-            let mut map: OpenHashMapVec<Vec<u8>, Vec<u8>> = OpenHashMap::default();
+            let mut map: OpenHashMapVec<Vec<u8>, Vec<u8>> =
+                OpenHashMap::new(VecStore::new(), VecStore::new(), VecStore::new());
             for (k, v) in data.iter() {
                 map.insert(black_box(k.clone()), black_box(v.clone()));
             }
         })
     });
 
-    let mut ohm_vec_map: OpenHashMapVec<Vec<u8>, Vec<u8>> = OpenHashMap::default();
+    let mut ohm_vec_map: OpenHashMapVec<Vec<u8>, Vec<u8>> =
+        OpenHashMap::new(VecStore::new(), VecStore::new(), VecStore::new());
     for (k, v) in data.iter() {
         ohm_vec_map.insert(k.clone(), v.clone());
     }
