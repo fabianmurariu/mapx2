@@ -211,8 +211,10 @@ impl<T: ByteStore> Buffers<T> {
 
             // Ensure the new length is sufficient for the new data, existing data, and offsets.
             let required_len = self.offsets_end() + data_len + needed_space;
-            if new_len < required_len {
-                new_len = required_len;
+            // If doubling the size is not enough, keep doubling until it's sufficient.
+            // This maintains a power-of-two growth strategy.
+            while new_len < required_len {
+                new_len *= 2;
             }
 
             // `grow` expects the additional size, not the new total size.
