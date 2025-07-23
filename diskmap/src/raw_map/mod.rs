@@ -37,8 +37,7 @@ impl<K: AsRef<[u8]>, V: AsRef<[u8]>> Default
     for OpenHashMap<K, V, Vec<u8>, Vec<u8>, Vec<u8>, FxBuildHasher>
 {
     fn default() -> Self {
-        let entry_cap = 16 * std::mem::size_of::<Entry>();
-        Self::new(Vec::with_capacity(entry_cap), Vec::new(), Vec::new())
+        Self::new(Vec::new(), Vec::new(), Vec::new())
     }
 }
 
@@ -86,60 +85,58 @@ where
 
     /// Returns the load factor of the map (size / capacity)
     pub fn load_factor(&self) -> f64 {
+        if self.capacity == 0 {
+            return f64::INFINITY; // Avoid division by zero
+        }
         self.size as f64 / self.capacity as f64
     }
 
     /// Check if resizing is needed based on load factor
     fn should_resize(&self) -> bool {
-        // Resize when load factor exceeds 70%
-        self.load_factor() > 0.7
+        if self.capacity == 0 {
+            return true;
+        }
+        // Resize when load factor exceeds 50%
+        self.load_factor() > 0.5
     }
 
-    fn hash_key(&self, key: &[u8]) -> usize {
-        self.hasher.hash_one(key) as usize
+    fn hash_key(&self, key: &[u8]) -> u64 {
+        self.hasher.hash_one(key)
     }
 
     /// Find the slot index for a key
     /// if the key is found, returns Some(index),
     /// if the key is not found return the first empty slot index
     fn find_slot(&self, key: &[u8]) -> Result<usize, usize> {
-        if self.entries.is_empty() {
-            return Err(self.len());
+        if self.capacity == 0 {
+            return Err(0);
         }
 
         let hash = self.hash_key(key);
-        let index = hash % self.capacity;
+        let mut index = hash as usize % self.capacity;
 
-        // Linear probing
-        for (index, entry) in self.entries[index..self.capacity()]
-            .iter()
-            .enumerate()
-            .map(|(i, e)| (i + index, e))
-            .chain(self.entries[..index].iter().enumerate())
-        {
+        for _ in 0..self.capacity {
+            let entry = &self.entries[index];
             if entry.is_empty() {
-                // Empty slot, key not found
                 return Err(index);
             }
 
-            if entry.is_deleted() {
-                // Deleted slot, continue probing
-                continue;
-            }
-            // Check if this is our key
-            if let Some(stored_key) = self.keys.get(entry.key_pos()) {
-                if key == stored_key {
-                    return Ok(index);
+            if !entry.is_deleted() {
+                if let Some(stored_key) = self.keys.get(entry.key_pos()) {
+                    if key == stored_key {
+                        return Ok(index);
+                    }
                 }
             }
+            // continue probing for deleted slots or non-matching keys
+            index = (index + 1) % self.capacity;
         }
 
-        Err(self.capacity())
+        Err(self.capacity)
     }
 
     /// Insert a key-value pair into the map
     pub fn insert(&mut self, k: K, v: V) -> Option<usize> {
-        // Check if we need to resize before insert
         if self.should_resize() {
             self.grow();
         }
@@ -147,67 +144,69 @@ where
         let key_bytes = k.as_ref();
         let value_bytes = v.as_ref();
 
-        match self.find_slot(key_bytes) {
-            Err(slot_idx) if slot_idx == self.capacity() => {
-                // need to resize, we double the capacity of the entries array
-                self.grow();
-                // insert the new key-value pair
-                self.insert(k, v)
-            }
-            Err(slot_idx) => {
-                // Found an empty slot, insert new key-value pair
-                let key_idx = self.keys.append(key_bytes);
-                let value_idx = self.values.append(value_bytes);
+        loop {
+            match self.find_slot(key_bytes) {
+                Err(slot_idx) => {
+                    // Found an empty slot, insert new key-value pair
+                    let key_idx = self.keys.append(key_bytes);
+                    let value_idx = self.values.append(value_bytes);
 
-                // Create a new entry
-                self.entries[slot_idx] = Entry::occupied_at_pos(key_idx, value_idx);
-                self.size += 1;
+                    self.entries[slot_idx] = Entry::occupied_at_pos(key_idx, value_idx);
+                    self.size += 1;
 
-                Some(slot_idx)
-            }
-            Ok(slot_idx) => {
-                // Key already exists, update value
-                let entry = &mut self.entries[slot_idx];
-                let old_value_idx = entry.key_pos();
-                let new_value_idx = self.values.append(value_bytes);
+                    return Some(slot_idx);
+                }
+                Ok(slot_idx) => {
+                    // Key already exists, update value
+                    let entry = &mut self.entries[slot_idx];
+                    let old_value_idx = entry.value_pos();
+                    let new_value_idx = self.values.append(value_bytes);
 
-                // Update the value index in the entry
-                entry.set_new_kv(old_value_idx, new_value_idx);
+                    entry.set_new_kv(entry.key_pos(), new_value_idx);
 
-                // If the value was updated, return the old value index
-                Some(old_value_idx)
+                    return Some(old_value_idx);
+                }
             }
         }
     }
 
     fn grow(&mut self) {
-        let new_capacity = if self.capacity == 0 { 8 } else { self.capacity } * 2;
+        let new_capacity = if self.capacity == 0 {
+            16
+        } else {
+            self.capacity * 2
+        };
         let mut new_entries = self.entries.new_empty(new_capacity);
-        // need a way to rehash all existing entries
+
+        // Re-hash all existing entries into the new larger array
         for entry in self.entries.iter() {
             if entry.is_occupied() {
-                // Reinsert existing entries into the new entries array
-                let key_data = self.keys.get(entry.key_pos()).unwrap_or_default();
+                let key_data = self
+                    .keys
+                    .get(entry.key_pos())
+                    .expect("key must exist for occupied entry");
                 let hash = self.hash_key(key_data);
-                let new_index = hash % new_capacity;
-                let new_entry = Entry::occupied_at_pos(entry.key_pos(), entry.value_pos());
-                // Find an empty slot in the new entries array
-                for entry in &mut new_entries[new_index..new_capacity] {
-                    if entry.is_empty() {
-                        // Found an empty slot, insert the entry
-                        *entry = new_entry;
+                let mut index = hash as usize % new_capacity;
+
+                // Linear probing in the new_entries array
+                loop {
+                    if new_entries[index].is_empty() {
+                        new_entries[index] = *entry;
                         break;
                     }
+                    index = (index + 1) % new_capacity;
                 }
             }
         }
-        // Update the entries to the new entries array
         self.entries = new_entries;
         self.capacity = new_capacity;
     }
 
     /// Get a value by key
     pub fn get<Q: AsRef<[u8]>>(&self, k: Q) -> Option<&[u8]> {
+        if self.is_empty() {
+            return None;
+        }
         let slot_idx = self.find_slot(k.as_ref()).ok()?;
         let entry = &self.entries[slot_idx];
 
@@ -251,6 +250,7 @@ mod tests {
 
         // Insert a key-value pair
         map.insert(b"key".to_vec(), b"value1".to_vec());
+        assert_eq!(map.get(b"key"), Some(b"value1".as_ref()));
 
         // Update the value
         map.insert(b"key".to_vec(), b"value2".to_vec());
@@ -258,6 +258,7 @@ mod tests {
         // Get the updated value
         let value = map.get(b"key");
         assert_eq!(value, Some(b"value2".as_ref()));
+        assert_eq!(map.len(), 1);
     }
 
     #[test]
@@ -300,15 +301,15 @@ mod tests {
 
         // Check that all values can be retrieved
         for (k, v) in hm.iter() {
-            assert_eq!(map.get(k), Some(v.as_ref()));
+            assert_eq!(map.get(k), Some(v.as_ref()), "key: {:?}", k);
         }
     }
     #[test]
     fn it_s_a_hash_map() {
         let small_hash_map_prop = proptest::collection::hash_map(
-            proptest::collection::vec(0u8..255, 1..2),
-            proptest::collection::vec(0u8..255, 1..2),
-            1..100,
+            proptest::collection::vec(0u8..255, 1..32),
+            proptest::collection::vec(0u8..255, 1..32),
+            1..250,
         );
 
         proptest!(|(values in small_hash_map_prop)|{
