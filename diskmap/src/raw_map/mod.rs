@@ -97,8 +97,8 @@ where
         if self.capacity == 0 {
             return true;
         }
-        // Resize when load factor exceeds 50%
-        self.load_factor() > 0.5
+        // Resize when load factor exceeds 40% for better performance.
+        self.load_factor() > 0.4
     }
 
     fn hash_key(&self, key: &[u8]) -> u64 {

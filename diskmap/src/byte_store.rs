@@ -141,6 +141,8 @@ impl MMapFile {
         file.set_len(size as u64)?;
 
         let mmap = unsafe { MmapMut::map_mut(&file)? };
+        // mmap.advise(memmap2::Advice::Sequential)
+        // .expect("Failed to advise mmap");
         Ok(Self {
             mmap,
             file,
