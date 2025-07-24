@@ -66,8 +66,8 @@ fn demo_with_array() {
     }
 
     // Verify retrieval
-    for i in 0..store.len() {
-        let retrieved = store.get(i).unwrap();
+    for (i, retrieved) in store.iter().enumerate() {
+        // let retrieved = store.get(i).unwrap();
         println!(
             "   Index {}: {:?} ({} bytes)",
             i,
@@ -88,7 +88,7 @@ fn demo_with_boxed_slice() {
     for size in [1, 10, 50, 100, 200] {
         let data: Vec<u8> = (0..size).map(|i| (i % 256) as u8).collect();
         let idx = store.append(&data);
-        println!("   Stored {} byte pattern at index {}", size, idx);
+        println!("   Stored {size} byte pattern at index {idx}");
     }
 
     println!(
@@ -105,7 +105,7 @@ fn demo_capacity_limits() {
 
     let mut count = 0;
     for i in 0..20 {
-        let data = format!("entry_{}", i);
+        let data = format!("entry_{i}");
         let idx = store.append(data.as_bytes());
         count += 1;
         println!(
@@ -118,10 +118,7 @@ fn demo_capacity_limits() {
 
     // Store one more to demonstrate auto-growing
     let idx = store.append(b"auto_grow_test");
-    println!(
-        "   Stored overflow test at index {} (auto-grew buffer)",
-        idx
-    );
+    println!("   Stored overflow test at index {idx} (auto-grew buffer)");
     println!();
 }
 

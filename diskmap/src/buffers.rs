@@ -570,7 +570,7 @@ mod tests {
                 for end in start..=len {
                     let slice = store.slice(start, end);
                     let expected: Vec<_> = (start..end).map(|i| store.get(i).unwrap()).collect();
-                    let iter: Vec<_> = slice.clone().iter().collect();
+                    let iter: Vec<_> = slice.iter().collect();
                     prop_assert_eq!(expected, iter);
                     prop_assert_eq!(slice.len(), end - start);
                 }

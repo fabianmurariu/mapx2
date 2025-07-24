@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use bytemuck::{Pod, Zeroable};
 use modular_bitfield::prelude::B62;
 use modular_bitfield::{Specifier, bitfield};
@@ -13,6 +14,7 @@ pub enum Status {
 #[bitfield(bits = 128)]
 #[derive(Clone, Copy, Zeroable, Pod, Debug)]
 #[repr(C)]
+#[allow(dead_code)]
 pub struct Entry {
     #[bits = 2]
     pub status: Status,
@@ -48,14 +50,6 @@ impl Entry {
 
     pub fn value_pos(&self) -> usize {
         self.v_pos() as usize
-    }
-
-    pub fn set_empty(&mut self) {
-        *self = Entry::new().with_status(Status::Empty);
-    }
-
-    pub fn set_deleted(&mut self) {
-        *self = Entry::new().with_status(Status::Deleted);
     }
 
     pub fn set_new_kv(&mut self, k_pos: usize, v_pos: usize) {

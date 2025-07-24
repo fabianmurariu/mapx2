@@ -238,12 +238,12 @@ mod tests {
     use rustc_hash::FxBuildHasher;
     use std::collections::HashMap;
 
-    type OHM<K, V> = OpenHashMap<K, V, VecStore, VecStore, VecStore, FxBuildHasher>;
+    type OpenHM<K, V> = OpenHashMap<K, V, VecStore, VecStore, VecStore, FxBuildHasher>;
 
     // Basic functionality tests
     #[test]
     fn test_insert_and_get() {
-        let mut map: OHM<Vec<u8>, Vec<u8>> = OpenHashMap::default();
+        let mut map: OpenHM<Vec<u8>, Vec<u8>> = OpenHashMap::default();
 
         // Insert a key-value pair
         map.insert(b"hello".to_vec(), b"world".to_vec());
@@ -259,7 +259,7 @@ mod tests {
 
     #[test]
     fn test_update_value() {
-        let mut map: OHM<Vec<u8>, Vec<u8>> = OpenHashMap::default();
+        let mut map: OpenHM<Vec<u8>, Vec<u8>> = OpenHashMap::default();
 
         // Insert a key-value pair
         map.insert(b"key".to_vec(), b"value1".to_vec());
@@ -276,7 +276,7 @@ mod tests {
 
     #[test]
     fn test_multiple_entries() {
-        let mut map: OHM<Vec<u8>, Vec<u8>> = OpenHashMap::default();
+        let mut map: OpenHM<Vec<u8>, Vec<u8>> = OpenHashMap::default();
 
         // Insert multiple key-value pairs
         map.insert(b"key1".to_vec(), b"value1".to_vec());
@@ -291,7 +291,7 @@ mod tests {
 
     #[test]
     fn test_empty_map() {
-        let map: OHM<Vec<u8>, Vec<u8>> = OpenHashMap::default();
+        let map: OpenHM<Vec<u8>, Vec<u8>> = OpenHashMap::default();
 
         // Map should be empty
         assert_eq!(map.len(), 0);
@@ -302,7 +302,7 @@ mod tests {
     }
 
     fn check_prop(hm: HashMap<Vec<u8>, Vec<u8>>) {
-        let mut map: OHM<Vec<u8>, Vec<u8>> = OpenHashMap::default();
+        let mut map: OpenHM<Vec<u8>, Vec<u8>> = OpenHashMap::default();
 
         // Insert all key-value pairs from the HashMap
         for (k, v) in hm.iter() {
@@ -314,7 +314,7 @@ mod tests {
 
         // Check that all values can be retrieved
         for (k, v) in hm.iter() {
-            assert_eq!(map.get(k), Some(v.as_ref()), "key: {:?}", k);
+            assert_eq!(map.get(k), Some(v.as_ref()), "key: {k:?}");
         }
     }
     #[test]

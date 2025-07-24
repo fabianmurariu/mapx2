@@ -2,8 +2,6 @@ use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use diskmap::byte_store::{MMapFile, VecStore};
 use diskmap::raw_map::OpenHashMap;
 use rustc_hash::FxBuildHasher;
-use sled;
-use std::collections::HashMap;
 use tempfile::tempdir;
 
 // Type alias for our Vec-backed OpenHashMap
