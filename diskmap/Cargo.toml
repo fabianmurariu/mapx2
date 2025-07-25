@@ -18,6 +18,7 @@ proptest = { workspace = true }
 tempfile = { workspace = true }
 paste.workspace = true
 sled = { workspace = true }
+rand.workspace = true
 
 [[bench]]
 name = "hash_map_comparison"

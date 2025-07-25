@@ -1,6 +1,7 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use diskmap::byte_store::{MMapFile, VecStore};
 use diskmap::raw_map::OpenHashMap;
+use rand::{Rng, distr::Alphanumeric};
 use rustc_hash::FxBuildHasher;
 use tempfile::tempdir;
 
@@ -11,10 +12,19 @@ type OpenHashMapMmap<K, V> = OpenHashMap<K, V, MMapFile, MMapFile, MMapFile, FxB
 
 /// Generates a vector of key-value pairs for benchmarking.
 fn generate_data(size: usize) -> Vec<(Vec<u8>, Vec<u8>)> {
+    let mut rng = rand::rng();
     (0..size)
-        .map(|i| {
-            let key = format!("key-{i}").into_bytes();
-            let value = format!("value-{i}").into_bytes();
+        .map(|_| {
+            let key_len = rng.random_range(1..=25);
+            let val_len = rng.random_range(1..=250);
+            let key: Vec<u8> = (&mut rng)
+                .sample_iter(&Alphanumeric)
+                .take(key_len)
+                .collect();
+            let value = (&mut rng)
+                .sample_iter(&Alphanumeric)
+                .take(val_len)
+                .collect();
             (key, value)
         })
         .collect()
