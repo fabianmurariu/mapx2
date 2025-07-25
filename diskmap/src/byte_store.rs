@@ -117,6 +117,31 @@ impl MMapFile {
         Self::new_inner(path, length_bytes, 0)
     }
 
+    pub fn from_file<P: AsRef<std::path::Path>>(path: P) -> io::Result<Self> {
+        use std::fs::OpenOptions;
+
+        let path = path.as_ref();
+        let file = OpenOptions::new().read(true).write(true).open(path)?;
+
+        let mmap = unsafe { MmapMut::map_mut(&file)? };
+
+        let file_stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+
+        let idx = if let Some(stripped) = file_stem.strip_prefix("entries_") {
+            stripped.parse::<usize>().unwrap_or(0)
+        } else {
+            0
+        };
+
+        Ok(Self {
+            mmap,
+            file,
+            path: path.to_path_buf(),
+            idx,
+            resizes: 0,
+        })
+    }
+
     fn new_inner<P: AsRef<std::path::Path>>(
         path: P,
         length_bytes: usize,
@@ -153,6 +178,14 @@ impl MMapFile {
     }
 }
 
+impl Drop for MMapFile {
+    fn drop(&mut self) {
+        // flush and sync are important to ensure data is written to disk.
+        let _ = self.mmap.flush();
+        let _ = self.file.sync_all();
+    }
+}
+
 impl AsRef<[u8]> for MMapFile {
     fn as_ref(&self) -> &[u8] {
         &self.mmap
@@ -169,9 +202,11 @@ impl ByteStore for MMapFile {
     fn grow(&mut self, additional: usize) {
         self.resizes += 1;
         // Flush and fsync current changes
-        self.mmap
-            .flush()
-            .unwrap_or_else(|_| panic!("Unrecoverable error flushing mmap"));
+        if self.mmap.flush().is_ok() {
+            self.file
+                .sync_all()
+                .unwrap_or_else(|_| panic!("Unrecoverable error syncing file"));
+        }
 
         let current_size = self.mmap.len();
         let new_size = (current_size + additional).next_power_of_two();

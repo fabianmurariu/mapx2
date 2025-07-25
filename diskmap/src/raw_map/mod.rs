@@ -1,14 +1,18 @@
 use std::hash::{BuildHasher, RandomState};
+use std::io;
 use std::marker::PhantomData;
+use std::path::Path;
 
 use rustc_hash::FxBuildHasher;
 
-use crate::byte_store::VecStore;
+use crate::byte_store::{MMapFile, VecStore};
 use crate::fixed_buffers::FixedVec;
 use crate::raw_map::entry::Entry;
+use crate::raw_map::storage::MapStorage;
 use crate::{Buffers, ByteStore};
 
 mod entry;
+mod storage;
 
 /// This is a open address hash map implementation,
 /// it takes any &[u8] as key and value.
@@ -212,13 +216,12 @@ where
         if self.is_empty() {
             return None;
         }
-        let slot_idx = self.find_slot(k.as_ref()).ok()?;
-        let entry = &self.entries[slot_idx];
-
-        if entry.is_occupied() {
-            self.values.get(entry.value_pos())
-        } else {
-            None
+        match self.find_slot(k.as_ref()) {
+            Ok(slot_idx) => {
+                let entry = &self.entries[slot_idx];
+                self.values.get(entry.value_pos())
+            }
+            Err(_) => None,
         }
     }
 
@@ -231,12 +234,73 @@ where
     }
 }
 
+impl<K, V, S> OpenHashMap<K, V, MMapFile, MMapFile, MMapFile, S>
+where
+    K: AsRef<[u8]>,
+    V: AsRef<[u8]>,
+    S: BuildHasher + Default,
+{
+    pub fn new_in(path: &Path) -> io::Result<Self> {
+        const DEFAULT_ENTRIES_CAP: usize = 16;
+        const DEFAULT_KV_CAP: usize = 1024;
+
+        let storage = MapStorage::new_in(
+            path,
+            DEFAULT_ENTRIES_CAP * std::mem::size_of::<Entry>(),
+            DEFAULT_KV_CAP,
+            DEFAULT_KV_CAP,
+        )?;
+
+        let keys = Buffers::new(storage.keys);
+        let values = Buffers::new(storage.values);
+        let entries = FixedVec::<Entry, _>::new(storage.entries);
+        let capacity = entries.capacity();
+
+        Ok(Self {
+            keys,
+            values,
+            entries,
+            capacity,
+            size: 0,
+            hasher: S::default(),
+            _marker: PhantomData,
+        })
+    }
+
+    pub fn load_from(path: &Path) -> io::Result<Self> {
+        let storage = MapStorage::load_from(path)?;
+
+        let keys = Buffers::new(storage.keys);
+        let values = Buffers::new(storage.values);
+        let entries = FixedVec::<Entry, _>::new(storage.entries);
+        let capacity = entries.capacity();
+
+        let mut size = 0;
+        for i in 0..capacity {
+            if entries[i].is_occupied() {
+                size += 1;
+            }
+        }
+
+        Ok(Self {
+            keys,
+            values,
+            entries,
+            capacity,
+            size,
+            hasher: S::default(),
+            _marker: PhantomData,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use proptest::prelude::*;
     use rustc_hash::FxBuildHasher;
     use std::collections::HashMap;
+    use tempfile::tempdir;
 
     type OpenHM<K, V> = OpenHashMap<K, V, VecStore, VecStore, VecStore, FxBuildHasher>;
 
@@ -414,6 +478,48 @@ mod tests {
         }
 
         check_prop(expected);
+    }
+
+    #[test]
+    fn test_persistence() {
+        let dir = tempdir().unwrap();
+        let path = dir.path();
+
+        type FileMap<K, V> = OpenHashMap<K, V, MMapFile, MMapFile, MMapFile, FxBuildHasher>;
+
+        // 1. Create a new map and add some data
+        {
+            let mut map: FileMap<Vec<u8>, Vec<u8>> = FileMap::new_in(path).unwrap();
+            map.insert(b"key1".to_vec(), b"value1".to_vec());
+            map.insert(b"key2".to_vec(), b"value2".to_vec());
+            assert_eq!(map.len(), 2);
+        } // map is dropped, files should be persisted
+
+        // 2. Load the map from disk
+        {
+            let map: FileMap<Vec<u8>, Vec<u8>> = FileMap::load_from(path).unwrap();
+            assert_eq!(map.len(), 2);
+            assert_eq!(map.get(b"key1"), Some(b"value1".as_ref()));
+            assert_eq!(map.get(b"key2"), Some(b"value2".as_ref()));
+            assert_eq!(map.get(b"key3"), None);
+        }
+
+        // 3. Load again, and add more data
+        {
+            let mut map: FileMap<Vec<u8>, Vec<u8>> = FileMap::load_from(path).unwrap();
+            map.insert(b"key3".to_vec(), b"value3".to_vec());
+            assert_eq!(map.len(), 3);
+            assert_eq!(map.get(b"key3"), Some(b"value3".as_ref()));
+        }
+
+        // 4. Load one more time to check the new data is there
+        {
+            let map: FileMap<Vec<u8>, Vec<u8>> = FileMap::load_from(path).unwrap();
+            assert_eq!(map.len(), 3);
+            assert_eq!(map.get(b"key1"), Some(b"value1".as_ref()));
+            assert_eq!(map.get(b"key2"), Some(b"value2".as_ref()));
+            assert_eq!(map.get(b"key3"), Some(b"value3".as_ref()));
+        }
     }
 
     #[test]
