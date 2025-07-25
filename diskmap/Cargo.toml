@@ -7,7 +7,7 @@ resolver = "3"
 [dependencies]
 
 modular-bitfield.workspace = true
-bytemuck = { workspace = true, features = ["derive"] }
+bytemuck = { version = "1.16.0", features = ["derive"] }
 memmap2.workspace = true
 rustc-hash.workspace = true
 

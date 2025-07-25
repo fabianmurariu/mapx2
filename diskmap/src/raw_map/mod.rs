@@ -270,8 +270,8 @@ where
     pub fn load_from(path: &Path) -> io::Result<Self> {
         let storage = MapStorage::load_from(path)?;
 
-        let keys = Buffers::new(storage.keys);
-        let values = Buffers::new(storage.values);
+        let keys = Buffers::load(storage.keys);
+        let values = Buffers::load(storage.values);
         let entries = FixedVec::<Entry, _>::new(storage.entries);
         let capacity = entries.capacity();
 
