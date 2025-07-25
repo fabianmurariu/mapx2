@@ -493,6 +493,8 @@ mod tests {
             map.insert(b"key1".to_vec(), b"value1".to_vec());
             map.insert(b"key2".to_vec(), b"value2".to_vec());
             assert_eq!(map.len(), 2);
+            assert_eq!(map.get(b"key1"), Some(b"value1".as_ref()));
+            assert_eq!(map.get(b"key2"), Some(b"value2".as_ref()));
         } // map is dropped, files should be persisted
 
         // 2. Load the map from disk
