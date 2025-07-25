@@ -1,8 +1,9 @@
-use std::fmt::{Debug, Formatter};
 use std::mem::size_of;
 use std::ops::Index;
 
-use crate::byte_store::{ByteStore, VecStore};
+use bytemuck;
+
+use crate::byte_store::ByteStore;
 
 /// This module contains the implementation of `Buffers`, a data structure
 /// that stores a sequence of byte arrays in a single underlying `ByteStore`.
@@ -24,6 +25,7 @@ use crate::byte_store::{ByteStore, VecStore};
 /// shifted to the new end of the buffer to make space for new offsets and data.
 
 /// `Buffers` stores a sequence of byte arrays in a single `ByteStore`.
+#[derive(Debug)]
 pub struct Buffers<T: ByteStore> {
     byte_store: T,
     // The number of items in the store
@@ -33,19 +35,16 @@ pub struct Buffers<T: ByteStore> {
 }
 
 /// A slice of `Buffers`, representing a sub-sequence of the stored items.
+#[derive(Debug)]
 pub struct BuffersSlice<'a, T: ByteStore> {
-    byte_store: &'a T,
+    buffers: &'a Buffers<T>,
     start: usize, // Start index of the slice
     end: usize,   // End index of the slice
 }
 
 impl<'a, T: ByteStore> Clone for BuffersSlice<'a, T> {
     fn clone(&self) -> Self {
-        BuffersSlice {
-            byte_store: self.byte_store,
-            start: self.start,
-            end: self.end,
-        }
+        *self
     }
 }
 
@@ -57,7 +56,7 @@ impl<'a, T: ByteStore> BuffersSlice<'a, T> {
         assert!(start <= end, "start must be <= end");
         assert!(end <= self.len(), "end out of bounds");
         BuffersSlice {
-            byte_store: self.byte_store,
+            buffers: self.buffers,
             start: self.start + start,
             end: self.start + end,
         }
@@ -76,49 +75,12 @@ impl<'a, T: ByteStore> BuffersSlice<'a, T> {
         }
     }
 
-    // This helper function computes the cumulative offset for a given index.
-    // The offset for index `i` is the sum of lengths of all items from 0 to `i`.
-    fn get_cumulative_offset(&self, index: usize) -> usize {
-        let offset_size = size_of::<usize>();
-        let pos = index * offset_size;
-        if pos + offset_size > self.byte_store.as_ref().len() {
-            return 0; // Should be an error or panic
-        }
-        let offset_bytes: [u8; size_of::<usize>()] = self.byte_store.as_ref()
-            [pos..pos + offset_size]
-            .try_into()
-            .unwrap();
-        usize::from_le_bytes(offset_bytes)
-    }
-
     /// Retrieve the byte slice at a given index
     pub fn get(&self, index: usize) -> Option<&'a [u8]> {
         if index >= self.len() {
             return None;
         }
-
-        let actual_index = self.start + index;
-        let total_len = self.byte_store.as_ref().len();
-
-        let end_offset = self.get_cumulative_offset(actual_index);
-        let start_offset = if actual_index > 0 {
-            self.get_cumulative_offset(actual_index - 1)
-        } else {
-            0
-        };
-
-        if end_offset == 0 && start_offset == 0 && self.len() > 0 && index > 0 {
-            return None;
-        }
-
-        if end_offset < start_offset {
-            return None;
-        }
-
-        let len = end_offset - start_offset;
-        let data_start = total_len - end_offset;
-
-        Some(&self.byte_store.as_ref()[data_start..data_start + len])
+        self.buffers.get(self.start + index)
     }
 }
 
@@ -153,16 +115,32 @@ impl<'a, B: ByteStore> IntoIterator for BuffersSlice<'a, B> {
 impl<T: ByteStore> Buffers<T> {
     /// Create a new ByteStore with the given buffer
     pub fn new(byte_store: T) -> Self {
-        let len = byte_store.as_ref().len();
-        Self {
+        let data_end = byte_store.as_ref().len();
+        let mut s = Self {
             byte_store,
             count: 0,
-            data_end: len,
+            data_end,
+        };
+
+        let needed = s.offsets_end();
+        if needed > s.byte_store.as_ref().len() {
+            s.byte_store.grow(needed - s.byte_store.as_ref().len());
+            s.data_end = s.byte_store.as_ref().len();
         }
+
+        // Write initial 0 offset
+        s.byte_store.as_mut()[0..size_of::<usize>()].copy_from_slice(&0usize.to_le_bytes());
+
+        s
     }
 
     pub fn store(&self) -> &T {
         &self.byte_store
+    }
+
+    pub fn offsets(&self) -> &[usize] {
+        let offset_bytes = &self.byte_store.as_ref()[0..self.offsets_end()];
+        bytemuck::cast_slice(offset_bytes)
     }
 
     /// Create a slice of the buffers from [start, end)
@@ -170,7 +148,7 @@ impl<T: ByteStore> Buffers<T> {
         assert!(start <= end, "start must be <= end");
         assert!(end <= self.len(), "end out of bounds");
         BuffersSlice {
-            byte_store: &self.byte_store,
+            buffers: self,
             start,
             end,
         }
@@ -191,48 +169,34 @@ impl<T: ByteStore> Buffers<T> {
             let old_len = self.byte_store.as_ref().len();
             let data_len = old_len - self.data_end;
 
-            // To avoid frequent resizes, we double the buffer's capacity. This greedy
-            // approach ensures that `copy_within` can safely move data without overwriting
-            // existing contents. The offsets remain at the front, while data is shifted
-            // to the back.
             let mut new_len = if old_len == 0 { 256 } else { old_len * 2 };
 
-            // Ensure the new length is sufficient for the new data, existing data, and offsets.
             let required_len = self.offsets_end() + data_len + needed_space;
-            // If doubling the size is not enough, keep doubling until it's sufficient.
-            // This maintains a power-of-two growth strategy.
             while new_len < required_len {
                 new_len *= 2;
             }
 
-            // `grow` expects the additional size, not the new total size.
             let growth = new_len - old_len;
             self.byte_store.grow(growth);
             let new_actual_len = self.byte_store.as_ref().len();
 
-            // Calculate the new starting position for the data block, which is at the end.
             let new_data_end = new_actual_len - data_len;
 
-            // Move the existing data to the end of the newly allocated space.
-            // `copy_within` is efficient as it avoids a temporary allocation (like `to_vec`),
-            // which is critical for memory-mapped files. The data is moved from its old
-            // position to the end of the new buffer. This is safe because the destination
-            // is guaranteed not to conflict with the source.
             if data_len > 0 {
                 self.byte_store
                     .as_mut()
                     .copy_within(self.data_end..old_len, new_data_end);
             }
 
-            // Update the pointer to the start of the data section.
             self.data_end = new_data_end;
         }
 
         self.data_end -= bytes.len();
         self.byte_store.as_mut()[self.data_end..self.data_end + bytes.len()].copy_from_slice(bytes);
 
-        let offset_pos = self.count * offset_size;
         let cumulative_len = self.byte_store.as_ref().len() - self.data_end;
+
+        let offset_pos = (self.count + 1) * offset_size;
         self.byte_store.as_mut()[offset_pos..offset_pos + offset_size]
             .copy_from_slice(&cumulative_len.to_le_bytes());
 
@@ -242,7 +206,7 @@ impl<T: ByteStore> Buffers<T> {
     }
 
     fn offsets_end(&self) -> usize {
-        self.count * size_of::<usize>()
+        (self.count + 1) * size_of::<usize>()
     }
 
     /// Get the number of stored entries
@@ -255,41 +219,25 @@ impl<T: ByteStore> Buffers<T> {
         self.count == 0
     }
 
-    fn get_cumulative_offset(&self, index: usize) -> usize {
-        let offset_size = size_of::<usize>();
-        let pos = index * offset_size;
-        if pos + offset_size > self.offsets_end() {
-            return 0;
-        }
-        let offset_bytes: [u8; size_of::<usize>()] = self.byte_store.as_ref()
-            [pos..pos + offset_size]
-            .try_into()
-            .unwrap();
-        usize::from_le_bytes(offset_bytes)
-    }
-
     /// Get a byte slice by its index
     pub fn get(&self, index: usize) -> Option<&[u8]> {
         if index >= self.count {
             return None;
         }
 
-        let total_len = self.byte_store.as_ref().len();
-        let end_offset = self.get_cumulative_offset(index);
-        let start_offset = if index > 0 {
-            self.get_cumulative_offset(index - 1)
-        } else {
-            0
-        };
+        let offsets = self.offsets();
+        let start_cumulative = offsets[index];
+        let end_cumulative = offsets[index + 1];
 
-        if end_offset <= start_offset && (index > 0 || end_offset != 0) {
-            // This indicates a corrupted or invalid state.
+        if end_cumulative < start_cumulative {
             return None;
         }
 
-        let len = end_offset - start_offset;
-        let data_start = total_len - end_offset;
-        Some(&self.byte_store.as_ref()[data_start..data_start + len])
+        let total_len = self.byte_store.as_ref().len();
+        let data_start = total_len - end_cumulative;
+        let data_end = total_len - start_cumulative;
+
+        Some(&self.byte_store.as_ref()[data_start..data_end])
     }
 
     /// Calculate the free space in the buffer. This is the space between the end of
@@ -306,6 +254,9 @@ impl<T: ByteStore> Buffers<T> {
     pub fn clear(&mut self) {
         self.count = 0;
         self.data_end = self.byte_store.as_ref().len();
+        if self.byte_store.as_ref().len() >= size_of::<usize>() {
+            self.byte_store.as_mut()[0..size_of::<usize>()].copy_from_slice(&0usize.to_le_bytes());
+        }
     }
 }
 
@@ -321,12 +272,10 @@ impl<B: ByteStore> Index<usize> for Buffers<B> {
 
 #[cfg(test)]
 mod tests {
-    use crate::ByteStore;
-    use crate::byte_store::MMapFile;
+    use super::*;
+    use crate::byte_store::{MMapFile, VecStore};
     use proptest::prelude::*;
     use tempfile::NamedTempFile;
-
-    use super::*;
 
     // A generic test harness for any `ByteStore` implementation.
     // The macro avoids code duplication for `VecStore` and `MMapFile`.
@@ -678,8 +627,8 @@ mod tests {
     fn test_offset_system_with_growth() {
         // Start with a small buffer to force growth
         let mut buffers = Buffers::new(VecStore::with_capacity(32));
-        buffers.append([1; 10]);
-        buffers.append([2; 10]);
+        buffers.append(&[1; 10]);
+        buffers.append(&[2; 10]);
 
         assert_eq!(buffers.len(), 2);
         assert_eq!(buffers.store().as_ref().len() > 32, true); // It grew
