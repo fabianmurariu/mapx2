@@ -669,11 +669,9 @@ mod tests {
     }
 
     #[test]
-    fn test_adding_empty_buffer() {
+    fn test_empty_buffer() {
         let mut buffers = Buffers::new(VecStore::with_capacity(64));
-        buffers.append([]); // Append empty data
-        assert_eq!(buffers.len(), 1);
-        assert_eq!(buffers.get(0), Some(&[][..]));
+        check_test_empty_data(&mut buffers);
     }
 
     #[test]
