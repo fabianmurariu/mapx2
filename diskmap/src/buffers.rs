@@ -21,7 +21,6 @@ use crate::byte_store::ByteStore;
 ///
 /// When the buffer runs out of space, it grows, and the data section is
 /// shifted to the new end of the buffer to make space for new offsets and data.
-
 /// `Buffers` stores a sequence of byte arrays in a single `ByteStore`.
 #[derive(Debug)]
 pub struct Buffers<T: ByteStore> {
@@ -111,6 +110,14 @@ impl<'a, B: ByteStore> IntoIterator for BuffersSlice<'a, B> {
 }
 
 impl<T: ByteStore> Buffers<T> {
+    fn bs(&self) -> &[u8] {
+        self.byte_store.as_ref()
+    }
+
+    fn bs_mut(&mut self) -> &mut [u8] {
+        self.byte_store.as_mut()
+    }
+
     /// Create a new ByteStore with the given buffer
     pub fn new(byte_store: T) -> Self {
         let data_end = byte_store.as_ref().len();
@@ -123,11 +130,21 @@ impl<T: ByteStore> Buffers<T> {
         s
     }
 
+    fn get_count(byte_store: &T) -> usize {
+        let count_bytes_range = 0..size_of::<usize>();
+        let count_bytes: [u8; size_of::<usize>()] =
+            byte_store.as_ref()[count_bytes_range].try_into().unwrap();
+        usize::from_le_bytes(count_bytes)
+    }
+
+    fn set_count(&mut self) {
+        let count_bytes_range = 0..size_of::<usize>();
+        let count = self.count;
+        self.bs_mut()[count_bytes_range].copy_from_slice(&count.to_le_bytes());
+    }
+
     pub fn load(byte_store: T) -> Self {
-        let count_bytes: [u8; size_of::<usize>()] = byte_store.as_ref()[0..size_of::<usize>()]
-            .try_into()
-            .unwrap();
-        let count = usize::from_le_bytes(count_bytes);
+        let count = Self::get_count(&byte_store);
 
         let mut s = Self {
             byte_store,
@@ -136,20 +153,22 @@ impl<T: ByteStore> Buffers<T> {
         };
 
         let last_offset = s.offsets().last().copied().unwrap_or(0);
-        s.data_end = s.byte_store.as_ref().len() - last_offset;
+        s.data_end = s.bs().len() - last_offset;
         s
     }
 
     fn write_header_and_initial_offset(&mut self) {
         let needed = self.offsets_end();
-        if needed > self.byte_store.as_ref().len() {
-            self.byte_store
-                .grow(needed - self.byte_store.as_ref().len());
-            self.data_end = self.byte_store.as_ref().len();
+        if needed > self.bs().len() {
+            let grow_by = needed - self.bs().len();
+            self.byte_store.grow(grow_by);
+            self.data_end = self.bs().len();
         }
-        self.byte_store.as_mut()[0..size_of::<usize>()].copy_from_slice(&self.count.to_le_bytes());
-        self.byte_store.as_mut()[Self::header_size()..Self::header_size() + size_of::<usize>()]
-            .copy_from_slice(&0usize.to_le_bytes());
+        self.set_count();
+        let initial_offset_start = Self::header_size();
+        let initial_offset_end = initial_offset_start + size_of::<usize>();
+        let initial_offset_slice = &mut self.bs_mut()[initial_offset_start..initial_offset_end];
+        initial_offset_slice.copy_from_slice(&0usize.to_le_bytes());
     }
 
     const fn header_size() -> usize {
@@ -161,7 +180,9 @@ impl<T: ByteStore> Buffers<T> {
     }
 
     pub fn offsets(&self) -> &[usize] {
-        let offset_bytes = &self.byte_store.as_ref()[Self::header_size()..self.offsets_end()];
+        let offsets_start = Self::header_size();
+        let offsets_end = self.offsets_end();
+        let offset_bytes = &self.bs()[offsets_start..offsets_end];
         bytemuck::cast_slice(offset_bytes)
     }
 
@@ -188,7 +209,7 @@ impl<T: ByteStore> Buffers<T> {
         let needed_space = offset_size + bytes.len();
 
         if self.free_space() < needed_space {
-            let old_len = self.byte_store.as_ref().len();
+            let old_len = self.bs().len();
             let data_len = old_len - self.data_end;
 
             let mut new_len = if old_len == 0 { 256 } else { old_len * 2 };
@@ -200,33 +221,35 @@ impl<T: ByteStore> Buffers<T> {
 
             let growth = new_len - old_len;
             self.byte_store.grow(growth);
-            let new_actual_len = self.byte_store.as_ref().len();
+            let new_actual_len = self.bs().len();
 
             let new_data_end = new_actual_len - data_len;
 
             if data_len > 0 {
-                self.byte_store
-                    .as_mut()
-                    .copy_within(self.data_end..old_len, new_data_end);
+                let data_src_range = self.data_end..old_len;
+                self.bs_mut().copy_within(data_src_range, new_data_end);
             }
 
             self.data_end = new_data_end;
         }
 
         self.data_end -= bytes.len();
-        self.byte_store.as_mut()[self.data_end..self.data_end + bytes.len()].copy_from_slice(bytes);
+        let data_write_start = self.data_end;
+        let data_write_end = data_write_start + bytes.len();
+        self.bs_mut()[data_write_start..data_write_end].copy_from_slice(bytes);
 
-        let cumulative_len = self.byte_store.as_ref().len() - self.data_end;
+        let cumulative_len = self.bs().len() - self.data_end;
 
         let index = self.count;
         self.count += 1;
 
         // Update count in header
-        self.byte_store.as_mut()[0..size_of::<usize>()].copy_from_slice(&self.count.to_le_bytes());
+        self.set_count();
 
         // Write new cumulative offset
-        let offset_pos = Self::header_size() + self.count * offset_size;
-        self.byte_store.as_mut()[offset_pos..offset_pos + offset_size]
+        let new_offset_start = Self::header_size() + self.count * offset_size;
+        let new_offset_end = new_offset_start + offset_size;
+        self.bs_mut()[new_offset_start..new_offset_end]
             .copy_from_slice(&cumulative_len.to_le_bytes());
 
         index
@@ -257,14 +280,17 @@ impl<T: ByteStore> Buffers<T> {
         let end_cumulative = offsets[index + 1];
 
         if end_cumulative < start_cumulative {
-            return None;
+            panic!(
+                "Invalid offsets: end_cumulative ({}) < start_cumulative ({}) for index {}",
+                end_cumulative, start_cumulative, index
+            );
         }
 
-        let total_len = self.byte_store.as_ref().len();
+        let total_len = self.bs().len();
         let data_start = total_len - end_cumulative;
         let data_end = total_len - start_cumulative;
 
-        Some(&self.byte_store.as_ref()[data_start..data_end])
+        Some(&self.bs()[data_start..data_end])
     }
 
     /// Calculate the free space in the buffer. This is the space between the end of
@@ -280,7 +306,7 @@ impl<T: ByteStore> Buffers<T> {
     /// Clear all entries from the store
     pub fn clear(&mut self) {
         self.count = 0;
-        self.data_end = self.byte_store.as_ref().len();
+        self.data_end = self.bs().len();
         self.write_header_and_initial_offset();
     }
 }
