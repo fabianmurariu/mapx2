@@ -23,3 +23,7 @@ rand.workspace = true
 [[bench]]
 name = "hash_map_comparison"
 harness = false
+
+[[bench]]
+name = "u64_key_benchmark"
+harness = false
