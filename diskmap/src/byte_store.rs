@@ -251,8 +251,8 @@ impl ByteStore for MMapFile {
         let file_name = parent_path.join(format!("{}_{}.bin", path_name, self.idx + 1));
         // Create a new file with the new size
         let mut new_file =
-            MMapFile::new_inner(file_name, new_size, self.idx + 1).unwrap_or_else(|_| {
-                panic!("Unrecoverable error creating new mmap file with {new_size} bytes");
+            MMapFile::new_inner(file_name, new_size, self.idx + 1).unwrap_or_else(|err| {
+                panic!("Unrecoverable error creating new mmap file with {new_size} bytes: {err}");
             });
 
         new_file.resizes = self.resizes + 1;

@@ -1,10 +1,8 @@
-use bytemuck;
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use diskmap::byte_store::MMapFile;
 use diskmap::raw_map::OpenHashMap;
 use rand::Rng;
 use rustc_hash::FxBuildHasher;
-use std::collections::HashMap;
 use std::time::Duration;
 use tempfile::tempdir;
 
@@ -25,28 +23,23 @@ impl AsRef<[u8]> for U64 {
 type OpenHashMapMmapU64 = OpenHashMap<U64, Vec<u8>, MMapFile, MMapFile, MMapFile, FxBuildHasher>;
 
 /// Generates a vector of key-value pairs for benchmarking.
-/// Keys are random u64 values, and values are random alphanumeric strings.
+/// Keys are random u64 values, and values are random byte vectors.
 fn generate_data(size: usize) -> Vec<(U64, Vec<u8>)> {
-    const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
     (0..size)
         .map(|_| {
-            let key = U64(rng.r#gen::<u64>());
-            let value_len = rng.gen_range(1..=250);
-            let value: Vec<u8> = (0..value_len)
-                .map(|_| {
-                    let idx = rng.gen_range(0..CHARSET.len());
-                    CHARSET[idx]
-                })
-                .collect();
+            let key = U64(rng.random::<u64>());
+            let value_len = rng.random_range(1..=250);
+            let mut value = vec![0u8; value_len];
+            rng.fill(&mut value[..]);
             (key, value)
         })
         .collect()
 }
 
 fn benchmark_u64_key_hash_map(c: &mut Criterion) {
-    for &size in &[100_000, 1_000_000] {
-        let mut group = c.benchmark_group(format!("u64_key_size={}", size));
+    for &size in &[100_000, 1_000_000, 10_000_000] {
+        let mut group = c.benchmark_group(format!("u64_key_size={size}"));
         if size >= 1_000_000 {
             // Reduce sample count for large benchmarks to keep them from running too long
             group.sample_size(10);
@@ -55,37 +48,13 @@ fn benchmark_u64_key_hash_map(c: &mut Criterion) {
 
         let data = generate_data(size);
 
-        // --- std::collections::HashMap ---
-        group.bench_function("std::HashMap - insert", |b| {
-            b.iter(|| {
-                let mut map = HashMap::new();
-                for (k, v) in data.iter() {
-                    map.insert(black_box(*k), black_box(v.clone()));
-                }
-            })
-        });
-
-        let mut std_map = HashMap::new();
-        for (k, v) in data.iter() {
-            std_map.insert(*k, v.clone());
-        }
-        group.bench_function("std::HashMap - get", |b| {
-            b.iter(|| {
-                for (k, _) in data.iter() {
-                    std_map.get(black_box(k));
-                }
-            })
-        });
-
         // --- OpenHashMap with MmapFile backing ---
-        let dir = tempdir().unwrap();
-        // Generous sizing: avg 125 bytes/value + 8 bytes/key + overhead
         group.bench_function("OpenHashMap<Mmap> - insert", |b| {
             b.iter_with_setup(
                 || {
                     // Recreate files for each iteration to start fresh
-                    let path = dir.path();
-                    OpenHashMapMmapU64::new_in(path).unwrap()
+                    let dir = tempdir().unwrap();
+                    OpenHashMapMmapU64::new_in(dir.path()).unwrap()
                 },
                 |mut map: OpenHashMapMmapU64| {
                     for (k, v) in data.iter() {
@@ -105,6 +74,35 @@ fn benchmark_u64_key_hash_map(c: &mut Criterion) {
             b.iter(|| {
                 for (k, _) in data.iter() {
                     ohm_mmap_map_get.get(black_box(*k));
+                }
+            })
+        });
+
+        // --- Sled DB ---
+        group.bench_function("Sled - insert", |b| {
+            b.iter_with_setup(
+                || tempdir().unwrap(),
+                |dir| {
+                    let db = sled::open(dir.path()).unwrap();
+                    for (k, v) in data.iter() {
+                        db.insert(black_box(k.as_ref()), black_box(v.as_slice()))
+                            .unwrap();
+                    }
+                    db.flush().unwrap();
+                },
+            )
+        });
+
+        let sled_dir_get = tempdir().unwrap();
+        let sled_db_get = sled::open(sled_dir_get.path()).unwrap();
+        for (k, v) in data.iter() {
+            sled_db_get.insert(k.as_ref(), v.as_slice()).unwrap();
+        }
+        sled_db_get.flush().unwrap();
+        group.bench_function("Sled - get", |b| {
+            b.iter(|| {
+                for (k, _) in data.iter() {
+                    black_box(sled_db_get.get(black_box(k.as_ref())).unwrap());
                 }
             })
         });

@@ -43,52 +43,6 @@ fn benchmark_hash_map_comparisons(c: &mut Criterion) {
 
         let data = generate_data(size);
 
-        // --- std::collections::HashMap ---
-        // group.bench_function("std::HashMap - insert", |b| {
-        //     b.iter(|| {
-        //         let mut map = HashMap::new();
-        //         for (k, v) in data.iter() {
-        //             map.insert(black_box(k.clone()), black_box(v.clone()));
-        //         }
-        //     })
-        // });
-
-        // let mut std_map = HashMap::new();
-        // for (k, v) in data.iter() {
-        //     std_map.insert(k.clone(), v.clone());
-        // }
-        // group.bench_function("std::HashMap - get", |b| {
-        //     b.iter(|| {
-        //         for (k, _) in data.iter() {
-        //             std_map.get(black_box(k));
-        //         }
-        //     })
-        // });
-
-        // // --- OpenHashMap with Vec<u8> backing ---
-        // group.bench_function("OpenHashMap<Vec> - insert", |b| {
-        //     b.iter(|| {
-        //         let mut map: OpenHashMapVec<Vec<u8>, Vec<u8>> =
-        //             OpenHashMap::new(VecStore::new(), VecStore::new(), VecStore::new());
-        //         for (k, v) in data.iter() {
-        //             map.insert(black_box(k.clone()), black_box(v.clone()));
-        //         }
-        //     })
-        // });
-
-        // let mut ohm_vec_map: OpenHashMapVec<Vec<u8>, Vec<u8>> =
-        //     OpenHashMap::new(VecStore::new(), VecStore::new(), VecStore::new());
-        // for (k, v) in data.iter() {
-        //     ohm_vec_map.insert(k.clone(), v.clone());
-        // }
-        // group.bench_function("OpenHashMap<Vec> - get", |b| {
-        //     b.iter(|| {
-        //         for (k, _) in data.iter() {
-        //             ohm_vec_map.get(black_box(k));
-        //         }
-        //     })
-        // });
-
         // --- OpenHashMap with MmapFile backing ---
         let dir = tempdir().unwrap();
         let entry_path = dir.path().join("entries.mmap");
