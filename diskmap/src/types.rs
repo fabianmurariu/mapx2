@@ -85,10 +85,10 @@ impl<'a, S> BytesEncode<'a> for Str<S>
 where
     S: AsRef<str> + 'a,
 {
-    type EItem = S;
+    type EItem = str;
 
     fn bytes_encode(item: &'a Self::EItem) -> Result<Cow<'a, [u8]>, Box<dyn Error + Sync + Send>> {
-        Ok(Cow::Borrowed(item.as_ref().as_bytes()))
+        Ok(Cow::Borrowed(item.as_bytes()))
     }
 }
 
