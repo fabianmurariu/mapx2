@@ -1,7 +1,6 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use diskmap::byte_store::MMapFile;
 use diskmap::raw_map::OpenHashMap;
-use rand::Rng;
+use rand::{Rng, RngCore};
 use rustc_hash::FxBuildHasher;
 use std::time::Duration;
 use tempfile::tempdir;
@@ -20,7 +19,14 @@ impl AsRef<[u8]> for U64 {
 }
 
 // Type alias for our Mmap-backed OpenHashMap with U64 keys
-type OpenHashMapMmapU64 = OpenHashMap<U64, Vec<u8>, MMapFile, MMapFile, MMapFile, FxBuildHasher>;
+type OpenHashMapMmapU64 = OpenHashMap<
+    U64,
+    Vec<u8>,
+    diskmap::byte_store::MMapFile,
+    diskmap::byte_store::MMapFile,
+    diskmap::byte_store::MMapFile,
+    FxBuildHasher,
+>;
 
 /// Generates a vector of key-value pairs for benchmarking.
 /// Keys are random u64 values, and values are random byte vectors.
@@ -31,14 +37,14 @@ fn generate_data(size: usize) -> Vec<(U64, Vec<u8>)> {
             let key = U64(rng.random::<u64>());
             let value_len = rng.random_range(1..=250);
             let mut value = vec![0u8; value_len];
-            rng.fill(&mut value[..]);
+            rng.fill_bytes(&mut value);
             (key, value)
         })
         .collect()
 }
 
 fn benchmark_u64_key_hash_map(c: &mut Criterion) {
-    for &size in &[100_000, 1_000_000, 10_000_000] {
+    for &size in &[100_000, 1_000_000] {
         let mut group = c.benchmark_group(format!("u64_key_size={size}"));
         if size >= 1_000_000 {
             // Reduce sample count for large benchmarks to keep them from running too long
@@ -52,11 +58,13 @@ fn benchmark_u64_key_hash_map(c: &mut Criterion) {
         group.bench_function("OpenHashMap<Mmap> - insert", |b| {
             b.iter_with_setup(
                 || {
-                    // Recreate files for each iteration to start fresh
                     let dir = tempdir().unwrap();
-                    OpenHashMapMmapU64::new_in(dir.path()).unwrap()
+                    let map = OpenHashMapMmapU64::new_in(dir.path()).unwrap();
+                    // Keep the TempDir alive for the duration of the iteration
+                    (map, dir)
                 },
-                |mut map: OpenHashMapMmapU64| {
+                |(mut map, _dir)| {
+                    // _dir is dropped here, cleaning up the temp directory
                     for (k, v) in data.iter() {
                         map.insert(black_box(*k), black_box(v.clone()));
                     }
@@ -81,9 +89,12 @@ fn benchmark_u64_key_hash_map(c: &mut Criterion) {
         // --- Sled DB ---
         group.bench_function("Sled - insert", |b| {
             b.iter_with_setup(
-                || tempdir().unwrap(),
-                |dir| {
+                || {
+                    let dir = tempdir().unwrap();
                     let db = sled::open(dir.path()).unwrap();
+                    (db, dir)
+                },
+                |(db, _dir)| {
                     for (k, v) in data.iter() {
                         db.insert(black_box(k.as_ref()), black_box(v.as_slice()))
                             .unwrap();
