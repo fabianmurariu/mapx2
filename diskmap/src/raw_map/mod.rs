@@ -14,6 +14,49 @@ use crate::{Buffers, ByteStore};
 mod entry;
 mod storage;
 
+/// Entry API for the OpenHashMap, similar to std::collections::HashMap
+pub enum MapEntry<'a, K, V, EBs, KBs, VBs, S = RandomState>
+where
+    K: AsRef<[u8]>,
+    V: AsRef<[u8]>,
+    EBs: ByteStore,
+    KBs: ByteStore,
+    VBs: ByteStore,
+    S: BuildHasher,
+{
+    Occupied(OccupiedEntry<'a, K, V, EBs, KBs, VBs, S>),
+    Vacant(VacantEntry<'a, K, V, EBs, KBs, VBs, S>),
+}
+
+/// A view into an occupied entry in the map
+pub struct OccupiedEntry<'a, K, V, EBs, KBs, VBs, S = RandomState>
+where
+    K: AsRef<[u8]>,
+    V: AsRef<[u8]>,
+    EBs: ByteStore,
+    KBs: ByteStore,
+    VBs: ByteStore,
+    S: BuildHasher,
+{
+    map: &'a mut OpenHashMap<K, V, EBs, KBs, VBs, S>,
+    slot_idx: usize,
+}
+
+/// A view into a vacant entry in the map
+pub struct VacantEntry<'a, K, V, EBs, KBs, VBs, S = RandomState>
+where
+    K: AsRef<[u8]>,
+    V: AsRef<[u8]>,
+    EBs: ByteStore,
+    KBs: ByteStore,
+    VBs: ByteStore,
+    S: BuildHasher,
+{
+    map: &'a mut OpenHashMap<K, V, EBs, KBs, VBs, S>,
+    key: Vec<u8>,
+    slot_idx: usize,
+}
+
 /// This is a open address hash map implementation,
 /// it takes any &[u8] as key and value.
 /// It is designed to be used with a backing store that implements
@@ -143,8 +186,8 @@ where
         Err(self.capacity)
     }
 
-    /// Insert a key-value pair into the map
-    pub fn insert(&mut self, k: K, v: V) -> Option<usize> {
+    /// Insert a key-value pair into the map, returning reference to previous value if it existed
+    pub fn insert(&mut self, k: K, v: V) -> Option<&[u8]> {
         if self.should_resize() {
             self.grow();
         }
@@ -161,7 +204,7 @@ where
                 self.entries[slot_idx] = Entry::occupied_at_pos(key_idx, value_idx);
                 self.size += 1;
 
-                Some(slot_idx)
+                None
             }
             Ok(slot_idx) => {
                 // Key already exists, update value
@@ -172,8 +215,8 @@ where
                 // Update the value index in the entry, keeping the key pos
                 entry.set_new_kv(entry.key_pos(), new_value_idx);
 
-                // If the value was updated, return the old value index
-                Some(old_value_idx)
+                // Return reference to the old value
+                Some(self.values.get(old_value_idx).expect("value must exist for occupied entry"))
             }
         }
     }
@@ -222,6 +265,26 @@ where
                 self.values.get(entry.value_pos())
             }
             Err(_) => None,
+        }
+    }
+
+    /// Get an entry for the given key, allowing for efficient insertion/access patterns
+    pub fn entry<Q: AsRef<[u8]>>(&mut self, key: Q) -> MapEntry<'_, K, V, EBs, KBs, VBs, S> {
+        if self.should_resize() {
+            self.grow();
+        }
+
+        let key_bytes = key.as_ref();
+        match self.find_slot(key_bytes) {
+            Ok(slot_idx) => MapEntry::Occupied(OccupiedEntry {
+                map: self,
+                slot_idx,
+            }),
+            Err(slot_idx) => MapEntry::Vacant(VacantEntry {
+                map: self,
+                key: key_bytes.to_vec(),
+                slot_idx,
+            }),
         }
     }
 
@@ -291,6 +354,68 @@ where
             hasher: S::default(),
             _marker: PhantomData,
         })
+    }
+}
+
+impl<'a, K, V, EBs, KBs, VBs, S> OccupiedEntry<'a, K, V, EBs, KBs, VBs, S>
+where
+    K: AsRef<[u8]>,
+    V: AsRef<[u8]>,
+    EBs: ByteStore,
+    KBs: ByteStore,
+    VBs: ByteStore,
+    S: BuildHasher,
+{
+    /// Get a reference to the value in the entry
+    pub fn get(&self) -> &[u8] {
+        let entry = &self.map.entries[self.slot_idx];
+        self.map.values.get(entry.value_pos()).expect("value must exist for occupied entry")
+    }
+
+    /// Insert a new value into the entry, returning the old value
+    pub fn insert(&mut self, value: V) -> &[u8] {
+        let entry = &mut self.map.entries[self.slot_idx];
+        let old_value_idx = entry.value_pos();
+        let new_value_idx = self.map.values.append(value.as_ref());
+        
+        // Update the value index in the entry, keeping the key pos
+        entry.set_new_kv(entry.key_pos(), new_value_idx);
+        
+        self.map.values.get(old_value_idx).expect("value must exist for occupied entry")
+    }
+}
+
+impl<'a, K, V, EBs, KBs, VBs, S> VacantEntry<'a, K, V, EBs, KBs, VBs, S>
+where
+    K: AsRef<[u8]>,
+    V: AsRef<[u8]>,
+    EBs: ByteStore,
+    KBs: ByteStore,
+    VBs: ByteStore,
+    S: BuildHasher,
+{
+    /// Insert the value into the vacant entry, returning a reference to the inserted value
+    pub fn insert(self, value: V) -> &'a [u8] {
+        let key_idx = self.map.keys.append(&self.key);
+        let value_idx = self.map.values.append(value.as_ref());
+
+        self.map.entries[self.slot_idx] = Entry::occupied_at_pos(key_idx, value_idx);
+        self.map.size += 1;
+
+        self.map.values.get(value_idx).expect("value was just inserted")
+    }
+
+    /// Insert the value into the vacant entry if it's vacant, or return reference to existing value
+    pub fn or_insert(self, value: V) -> &'a [u8] {
+        self.insert(value)
+    }
+
+    /// Insert the value returned by the closure if the entry is vacant
+    pub fn or_insert_with<F>(self, f: F) -> &'a [u8]
+    where
+        F: FnOnce() -> V,
+    {
+        self.insert(f())
     }
 }
 
@@ -574,5 +699,95 @@ mod tests {
             values_resizes, initial_stats.2,
             "values store should not resize"
         );
+    }
+
+    #[test]
+    fn test_entry_api_vacant() {
+        let mut map: OpenHM<Vec<u8>, Vec<u8>> = OpenHashMap::default();
+
+        // Test vacant entry insertion
+        match map.entry(b"key1".to_vec()) {
+            MapEntry::Vacant(entry) => {
+                let value_ref = entry.insert(b"value1".to_vec());
+                assert_eq!(value_ref, b"value1");
+            }
+            MapEntry::Occupied(_) => panic!("Expected vacant entry"),
+        }
+
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.get(b"key1"), Some(b"value1".as_ref()));
+    }
+
+    #[test]
+    fn test_entry_api_occupied() {
+        let mut map: OpenHM<Vec<u8>, Vec<u8>> = OpenHashMap::default();
+        
+        // Insert initial value
+        map.insert(b"key1".to_vec(), b"value1".to_vec());
+
+        // Test occupied entry access and update
+        match map.entry(b"key1".to_vec()) {
+            MapEntry::Occupied(mut entry) => {
+                assert_eq!(entry.get(), b"value1");
+                let old_value = entry.insert(b"value2".to_vec());
+                assert_eq!(old_value, b"value1");
+            }
+            MapEntry::Vacant(_) => panic!("Expected occupied entry"),
+        }
+
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.get(b"key1"), Some(b"value2".as_ref()));
+    }
+
+    #[test]
+    fn test_entry_api_or_insert() {
+        let mut map: OpenHM<Vec<u8>, Vec<u8>> = OpenHashMap::default();
+
+        // Test or_insert with vacant entry
+        match map.entry(b"key1".to_vec()) {
+            MapEntry::Vacant(entry) => {
+                let value_ref = entry.or_insert(b"value1".to_vec());
+                assert_eq!(value_ref, b"value1");
+            }
+            MapEntry::Occupied(_) => panic!("Expected vacant entry"),
+        }
+
+        // Test entry with existing key (should not create occupied entry in this test)
+        assert_eq!(map.get(b"key1"), Some(b"value1".as_ref()));
+        assert_eq!(map.len(), 1);
+    }
+
+    #[test]
+    fn test_entry_api_or_insert_with() {
+        let mut map: OpenHM<Vec<u8>, Vec<u8>> = OpenHashMap::default();
+
+        // Test or_insert_with with vacant entry
+        match map.entry(b"key1".to_vec()) {
+            MapEntry::Vacant(entry) => {
+                let value_ref = entry.or_insert_with(|| b"computed_value".to_vec());
+                assert_eq!(value_ref, b"computed_value");
+            }
+            MapEntry::Occupied(_) => panic!("Expected vacant entry"),
+        }
+
+        assert_eq!(map.get(b"key1"), Some(b"computed_value".as_ref()));
+        assert_eq!(map.len(), 1);
+    }
+
+    #[test]
+    fn test_insert_returns_previous_value() {
+        let mut map: OpenHM<Vec<u8>, Vec<u8>> = OpenHashMap::default();
+
+        // First insert should return None
+        let previous = map.insert(b"key1".to_vec(), b"value1".to_vec());
+        assert_eq!(previous, None);
+
+        // Second insert should return previous value
+        let previous = map.insert(b"key1".to_vec(), b"value2".to_vec());
+        assert_eq!(previous, Some(b"value1".as_ref()));
+
+        // Verify current value
+        assert_eq!(map.get(b"key1"), Some(b"value2".as_ref()));
+        assert_eq!(map.len(), 1);
     }
 }
