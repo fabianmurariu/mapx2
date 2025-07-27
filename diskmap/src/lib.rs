@@ -1,7 +1,11 @@
 mod buffers;
 pub mod byte_store;
 mod fixed_buffers;
+pub mod hash_map;
 pub mod raw_map;
+pub mod types;
 pub use buffers::Buffers;
-pub use byte_store::{ByteStore, MMapFile};
+pub use byte_store::{ByteStore, MMapFile, VecStore};
+pub use hash_map::{HashMap, U64StringMap, StringU64Map, StringStringMap};
 pub use raw_map::{OpenHashMap, MapEntry, OccupiedEntry, VacantEntry};
+pub use types::{BytesEncode, BytesDecode, Native, Str, Bytes};

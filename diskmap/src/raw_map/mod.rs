@@ -11,8 +11,8 @@ use crate::raw_map::entry::Entry;
 use crate::raw_map::storage::MapStorage;
 use crate::{Buffers, ByteStore};
 
-mod entry;
-mod storage;
+pub mod entry;
+pub mod storage;
 
 /// Entry API for the OpenHashMap, similar to std::collections::HashMap
 pub enum MapEntry<'a, K, V, EBs, KBs, VBs, S = RandomState>
