@@ -1,14 +1,14 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use diskmap::byte_store::{MMapFile, VecStore};
-use diskmap::raw_map::OpenHashMap;
+use diskmap::disk_map::HashMap;
 use rand::{Rng, distr::Alphanumeric};
 use rustc_hash::FxBuildHasher;
 use tempfile::tempdir;
 
-// Type alias for our Vec-backed OpenHashMap
-type OpenHashMapVec<K, V> = OpenHashMap<K, V, VecStore, VecStore, VecStore, FxBuildHasher>;
-// Type alias for our Mmap-backed OpenHashMap
-type OpenHashMapMmap<K, V> = OpenHashMap<K, V, MMapFile, MMapFile, MMapFile, FxBuildHasher>;
+// Type alias for our Vec-backed HashMap
+type HashMapVec<K, V> = HashMap<K, V, VecStore, FxBuildHasher>;
+// Type alias for our Mmap-backed HashMap
+type HashMapMmap<K, V> = HashMap<K, V, MMapFile, FxBuildHasher>;
 
 /// Generates a vector of key-value pairs for benchmarking.
 fn generate_data(size: usize) -> Vec<(Vec<u8>, Vec<u8>)> {
@@ -43,46 +43,32 @@ fn benchmark_hash_map_comparisons(c: &mut Criterion) {
 
         let data = generate_data(size);
 
-        // --- OpenHashMap with MmapFile backing ---
-        let dir = tempdir().unwrap();
-        let entry_path = dir.path().join("entries.mmap");
-        let keys_path = dir.path().join("keys.mmap");
-        let values_path = dir.path().join("values.mmap");
-        let mmap_size = size as u64 * 20 + 1024 * 1024; // Generous sizing
-
-        group.bench_function("OpenHashMap<Mmap> - insert", |b| {
+        // --- HashMap with MmapFile backing ---
+        group.bench_function("HashMap<Mmap> - insert", |b| {
             b.iter_with_setup(
                 || {
-                    // Recreate files for each iteration to start fresh
-                    let entry_store =
-                        MMapFile::new(entry_path.clone(), mmap_size.try_into().unwrap()).unwrap();
-                    let keys_store =
-                        MMapFile::new(keys_path.clone(), mmap_size.try_into().unwrap()).unwrap();
-                    let values_store =
-                        MMapFile::new(values_path.clone(), mmap_size.try_into().unwrap()).unwrap();
-                    OpenHashMap::new(entry_store, keys_store, values_store)
+                    let dir = tempdir().unwrap();
+                    let map: HashMapMmap<Vec<u8>, Vec<u8>> = HashMap::new_in(dir.path()).unwrap();
+                    (map, dir) // Keep dir alive
                 },
-                |mut map: OpenHashMapMmap<Vec<u8>, Vec<u8>>| {
+                |(mut map, _dir)| {
                     for (k, v) in data.iter() {
-                        map.insert(black_box(k.clone()), black_box(v.clone()));
+                        map.insert_raw(black_box(k.clone()), black_box(v.clone()));
                     }
                 },
             );
         });
 
         // Setup for the get benchmark
-        let entry_store_get = MMapFile::new(entry_path, mmap_size.try_into().unwrap()).unwrap();
-        let keys_store_get = MMapFile::new(keys_path, mmap_size.try_into().unwrap()).unwrap();
-        let values_store_get = MMapFile::new(values_path, mmap_size.try_into().unwrap()).unwrap();
-        let mut ohm_mmap_map_get: OpenHashMapMmap<Vec<u8>, Vec<u8>> =
-            OpenHashMap::new(entry_store_get, keys_store_get, values_store_get);
+        let get_dir = tempdir().unwrap();
+        let mut hash_map_get: HashMapMmap<Vec<u8>, Vec<u8>> = HashMap::new_in(get_dir.path()).unwrap();
         for (k, v) in data.iter() {
-            ohm_mmap_map_get.insert(k.clone(), v.clone());
+            hash_map_get.insert_raw(k.clone(), v.clone());
         }
-        group.bench_function("OpenHashMap<Mmap> - get", |b| {
+        group.bench_function("HashMap<Mmap> - get", |b| {
             b.iter(|| {
                 for (k, _) in data.iter() {
-                    ohm_mmap_map_get.get(black_box(k));
+                    hash_map_get.get_raw(black_box(k));
                 }
             })
         });
