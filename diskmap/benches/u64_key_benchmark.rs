@@ -1,13 +1,14 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use diskmap::disk_map::HashMap;
-use diskmap::types::{Native, Bytes};
+use diskmap::types::{Bytes, Native};
 use rand::{Rng, RngCore};
 use rustc_hash::FxBuildHasher;
 use std::time::Duration;
 use tempfile::tempdir;
 
 // Type alias for our Mmap-backed HashMap with u64 keys and Vec<u8> values
-type HashMapMmapU64 = HashMap<Native<u64>, Bytes<Vec<u8>>, diskmap::byte_store::MMapFile, FxBuildHasher>;
+type HashMapMmapU64 =
+    HashMap<Native<u64>, Bytes<Vec<u8>>, diskmap::byte_store::MMapFile, FxBuildHasher>;
 
 /// Generates a vector of key-value pairs for benchmarking.
 /// Keys are random u64 values, and values are random byte vectors.
@@ -91,7 +92,7 @@ fn benchmark_u64_key_hash_map(c: &mut Criterion) {
         let sled_db_get = sled::open(sled_dir_get.path()).unwrap();
         for (k, v) in data.iter() {
             let key_bytes = k.to_le_bytes();
-            sled_db_get.insert(&key_bytes, v.as_slice()).unwrap();
+            sled_db_get.insert(key_bytes, v.as_slice()).unwrap();
         }
         sled_db_get.flush().unwrap();
         group.bench_function("Sled - get", |b| {

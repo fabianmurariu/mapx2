@@ -1,12 +1,10 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use diskmap::byte_store::{MMapFile, VecStore};
+use diskmap::byte_store::MMapFile;
 use diskmap::disk_map::HashMap;
 use rand::{Rng, distr::Alphanumeric};
 use rustc_hash::FxBuildHasher;
 use tempfile::tempdir;
 
-// Type alias for our Vec-backed HashMap
-type HashMapVec<K, V> = HashMap<K, V, VecStore, FxBuildHasher>;
 // Type alias for our Mmap-backed HashMap
 type HashMapMmap<K, V> = HashMap<K, V, MMapFile, FxBuildHasher>;
 
@@ -61,7 +59,8 @@ fn benchmark_hash_map_comparisons(c: &mut Criterion) {
 
         // Setup for the get benchmark
         let get_dir = tempdir().unwrap();
-        let mut hash_map_get: HashMapMmap<Vec<u8>, Vec<u8>> = HashMap::new_in(get_dir.path()).unwrap();
+        let mut hash_map_get: HashMapMmap<Vec<u8>, Vec<u8>> =
+            HashMap::new_in(get_dir.path()).unwrap();
         for (k, v) in data.iter() {
             hash_map_get.insert_raw(k.clone(), v.clone());
         }

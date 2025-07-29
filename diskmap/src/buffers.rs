@@ -281,8 +281,7 @@ impl<T: ByteStore> Buffers<T> {
 
         if end_cumulative < start_cumulative {
             panic!(
-                "Invalid offsets: end_cumulative ({}) < start_cumulative ({}) for index {}",
-                end_cumulative, start_cumulative, index
+                "Invalid offsets: end_cumulative ({end_cumulative}) < start_cumulative ({start_cumulative}) for index {index}"
             );
         }
 
@@ -396,7 +395,7 @@ mod tests {
 
         // Append data until the buffer needs to grow
         for i in 0..10 {
-            let data = format!("data{}", i);
+            let data = format!("data{i}");
             buffers.append(data.as_bytes());
         }
 
@@ -412,7 +411,7 @@ mod tests {
 
         // Verify data integrity after growing
         for i in 0..10 {
-            let expected_data = format!("data{}", i);
+            let expected_data = format!("data{i}");
             assert_eq!(buffers.get(i), Some(expected_data.as_bytes()));
         }
     }
@@ -610,8 +609,8 @@ mod tests {
     #[test]
     fn test_exact_interface_requirements() {
         let mut buffers = Buffers::new(VecStore::with_capacity(128));
-        buffers.append(&[1, 2]); // len=2, offset_size=8
-        buffers.append(&[3, 4, 5]); // len=3, offset_size=8
+        buffers.append([1, 2]); // len=2, offset_size=8
+        buffers.append([3, 4, 5]); // len=3, offset_size=8
 
         let _data_bytes = buffers.store().as_ref();
 
@@ -630,9 +629,9 @@ mod tests {
     #[test]
     fn test_offset_system_understanding() {
         let mut buffers = Buffers::new(VecStore::with_capacity(64));
-        buffers.append(&[1]); // total len 1
-        buffers.append(&[2, 2]); // total len 3
-        buffers.append(&[3, 3, 3]); // total len 6
+        buffers.append([1]); // total len 1
+        buffers.append([2, 2]); // total len 3
+        buffers.append([3, 3, 3]); // total len 6
 
         let offsets = buffers.offsets();
         assert_eq!(offsets[0], 0);
@@ -640,9 +639,9 @@ mod tests {
         assert_eq!(offsets[2], 3);
         assert_eq!(offsets[3], 6);
 
-        assert_eq!(buffers.get(0).unwrap(), &[1]);
-        assert_eq!(buffers.get(1).unwrap(), &[2, 2]);
-        assert_eq!(buffers.get(2).unwrap(), &[3, 3, 3]);
+        assert_eq!(buffers.get(0).unwrap(), [1]);
+        assert_eq!(buffers.get(1).unwrap(), [2, 2]);
+        assert_eq!(buffers.get(2).unwrap(), [3, 3, 3]);
     }
 
     #[test]
@@ -671,11 +670,11 @@ mod tests {
     fn test_offset_system_with_growth() {
         // Start with a small buffer to force growth
         let mut buffers = Buffers::new(VecStore::with_capacity(32));
-        buffers.append(&[1; 10]);
-        buffers.append(&[2; 10]);
+        buffers.append([1; 10]);
+        buffers.append([2; 10]);
 
         assert_eq!(buffers.len(), 2);
-        assert_eq!(buffers.store().as_ref().len() > 32, true); // It grew
+        assert!(buffers.store().as_ref().len() > 32); // It grew
 
         let offsets = buffers.offsets();
         assert_eq!(offsets[0], 0);
@@ -690,9 +689,9 @@ mod tests {
     #[test]
     fn test_detailed_offset_analysis() {
         let mut buffers = Buffers::new(VecStore::with_capacity(64));
-        buffers.append(&[1, 2]); // Cumulative len = 2
-        buffers.append(&[3, 4, 5]); // Cumulative len = 5
-        buffers.append(&[6]); // Cumulative len = 6
+        buffers.append([1, 2]); // Cumulative len = 2
+        buffers.append([3, 4, 5]); // Cumulative len = 5
+        buffers.append([6]); // Cumulative len = 6
 
         assert_eq!(buffers.get(0), Some(&[1, 2][..]));
         assert_eq!(buffers.get(1), Some(&[3, 4, 5][..]));
