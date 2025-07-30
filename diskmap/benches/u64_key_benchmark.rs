@@ -8,7 +8,7 @@ use tempfile::tempdir;
 
 // Type alias for our Mmap-backed HashMap with u64 keys and Vec<u8> values
 type HashMapMmapU64 =
-    HashMap<Native<u64>, Bytes<Vec<u8>>, diskmap::byte_store::MMapFile, FxBuildHasher>;
+    HashMap<Native<u64>, Bytes, diskmap::byte_store::MMapFile, FxBuildHasher>;
 
 /// Generates a vector of key-value pairs for benchmarking.
 /// Keys are random u64 values, and values are random byte vectors.

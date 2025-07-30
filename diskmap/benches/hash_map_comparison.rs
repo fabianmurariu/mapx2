@@ -1,12 +1,12 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use diskmap::byte_store::MMapFile;
 use diskmap::disk_map::HashMap;
+use diskmap::{Bytes, byte_store::MMapFile};
 use rand::{Rng, distr::Alphanumeric};
 use rustc_hash::FxBuildHasher;
 use tempfile::tempdir;
 
 // Type alias for our Mmap-backed HashMap
-type HashMapMmap<K, V> = HashMap<K, V, MMapFile, FxBuildHasher>;
+type HashMapMmap = HashMap<Bytes, Bytes, MMapFile, FxBuildHasher>;
 
 /// Generates a vector of key-value pairs for benchmarking.
 fn generate_data(size: usize) -> Vec<(Vec<u8>, Vec<u8>)> {
@@ -46,12 +46,12 @@ fn benchmark_hash_map_comparisons(c: &mut Criterion) {
             b.iter_with_setup(
                 || {
                     let dir = tempdir().unwrap();
-                    let map: HashMapMmap<Vec<u8>, Vec<u8>> = HashMap::new_in(dir.path()).unwrap();
+                    let map: HashMapMmap = HashMap::new_in(dir.path()).unwrap();
                     (map, dir) // Keep dir alive
                 },
                 |(mut map, _dir)| {
                     for (k, v) in data.iter() {
-                        map.insert_raw(black_box(k.clone()), black_box(v.clone()));
+                        map.insert(k, v).unwrap();
                     }
                 },
             );
@@ -59,15 +59,15 @@ fn benchmark_hash_map_comparisons(c: &mut Criterion) {
 
         // Setup for the get benchmark
         let get_dir = tempdir().unwrap();
-        let mut hash_map_get: HashMapMmap<Vec<u8>, Vec<u8>> =
+        let mut hash_map_get: HashMapMmap =
             HashMap::new_in(get_dir.path()).unwrap();
         for (k, v) in data.iter() {
-            hash_map_get.insert_raw(k.clone(), v.clone());
+            hash_map_get.insert(k, v).unwrap();
         }
         group.bench_function("HashMap<Mmap> - get", |b| {
             b.iter(|| {
                 for (k, _) in data.iter() {
-                    hash_map_get.get_raw(black_box(k));
+                    hash_map_get.get(k).unwrap();
                 }
             })
         });

@@ -28,23 +28,23 @@ impl<T> Default for Native<T> {
     }
 }
 
-/// Wrapper for string types
+/// Wrapper for string types - works directly with &str
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Str<S>(PhantomData<S>);
+pub struct Str;
 
-impl<S> Default for Str<S> {
+impl Default for Str {
     fn default() -> Self {
-        Self(PhantomData)
+        Self
     }
 }
 
-/// Wrapper for byte slice types
+/// Wrapper for byte slice types - works directly with &[u8]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Bytes<B>(PhantomData<B>);
+pub struct Bytes;
 
-impl<B> Default for Bytes<B> {
+impl Default for Bytes {
     fn default() -> Self {
-        Self(PhantomData)
+        Self
     }
 }
 
@@ -80,11 +80,8 @@ where
     }
 }
 
-// Implementations for Str<S>
-impl<'a, S> BytesEncode<'a> for Str<S>
-where
-    S: AsRef<str> + 'a,
-{
+// Implementations for Str
+impl<'a> BytesEncode<'a> for Str {
     type EItem = str;
 
     fn bytes_encode(item: &'a Self::EItem) -> Result<Cow<'a, [u8]>, Box<dyn Error + Sync + Send>> {
@@ -92,7 +89,7 @@ where
     }
 }
 
-impl<'a> BytesDecode<'a> for Str<&'a str> {
+impl<'a> BytesDecode<'a> for Str {
     type DItem = &'a str;
 
     fn bytes_decode(bytes: &'a [u8]) -> Result<Self::DItem, Box<dyn Error + Sync + Send>> {
@@ -100,40 +97,19 @@ impl<'a> BytesDecode<'a> for Str<&'a str> {
     }
 }
 
-impl<'a> BytesDecode<'a> for Str<String> {
-    type DItem = String;
-
-    fn bytes_decode(bytes: &'a [u8]) -> Result<Self::DItem, Box<dyn Error + Sync + Send>> {
-        std::str::from_utf8(bytes)
-            .map(|s| s.to_owned())
-            .map_err(|e| e.into())
-    }
-}
-
-// Implementations for Bytes<B>
-impl<'a, B> BytesEncode<'a> for Bytes<B>
-where
-    B: AsRef<[u8]> + 'a,
-{
-    type EItem = B;
+// Implementations for Bytes
+impl<'a> BytesEncode<'a> for Bytes {
+    type EItem = [u8];
 
     fn bytes_encode(item: &'a Self::EItem) -> Result<Cow<'a, [u8]>, Box<dyn Error + Sync + Send>> {
-        Ok(Cow::Borrowed(item.as_ref()))
+        Ok(Cow::Borrowed(item))
     }
 }
 
-impl<'a> BytesDecode<'a> for Bytes<&'a [u8]> {
+impl<'a> BytesDecode<'a> for Bytes {
     type DItem = &'a [u8];
 
     fn bytes_decode(bytes: &'a [u8]) -> Result<Self::DItem, Box<dyn Error + Sync + Send>> {
         Ok(bytes)
-    }
-}
-
-impl<'a> BytesDecode<'a> for Bytes<Vec<u8>> {
-    type DItem = Vec<u8>;
-
-    fn bytes_decode(bytes: &'a [u8]) -> Result<Self::DItem, Box<dyn Error + Sync + Send>> {
-        Ok(bytes.to_vec())
     }
 }

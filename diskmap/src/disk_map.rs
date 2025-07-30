@@ -13,9 +13,9 @@ use crate::types::{BytesDecode, BytesEncode, Native, Str};
 use crate::{Buffers, ByteStore};
 
 // Type aliases for common use cases
-pub type U64StringMap<BS = VecStore> = HashMap<Native<u64>, Str<String>, BS>;
-pub type StringU64Map<BS = VecStore> = HashMap<Str<String>, Native<u64>, BS>;
-pub type StringStringMap<BS = VecStore> = HashMap<Str<String>, Str<String>, BS>;
+pub type U64StringMap<BS = VecStore> = HashMap<Native<u64>, Str, BS>;
+pub type StringU64Map<BS = VecStore> = HashMap<Str, Native<u64>, BS>;
+pub type StringStringMap<BS = VecStore> = HashMap<Str, Str, BS>;
 
 /// Entry API for the HashMap, similar to std::collections::HashMap
 pub enum MapEntry<'a, K, V, BS, S = FxBuildHasher>
@@ -215,47 +215,6 @@ where
         }
     }
 
-    /// Legacy insert method for backward compatibility with AsRef<[u8]> types
-    pub fn insert_raw<K2, V2>(&mut self, k: K2, v: V2) -> Option<&[u8]>
-    where
-        K2: AsRef<[u8]>,
-        V2: AsRef<[u8]>,
-    {
-        if self.should_resize() {
-            let _ = self.grow();
-        }
-
-        let key_bytes = k.as_ref();
-        let value_bytes = v.as_ref();
-
-        match self.find_slot(key_bytes) {
-            Err(slot_idx) => {
-                // Found an empty slot, insert new key-value pair
-                let key_idx = self.keys.append(key_bytes);
-                let value_idx = self.values.append(value_bytes);
-
-                self.entries[slot_idx] = Entry::occupied_at_pos(key_idx, value_idx);
-                self.size += 1;
-
-                None
-            }
-            Ok(slot_idx) => {
-                // Key already exists, update value
-                let entry = &mut self.entries[slot_idx];
-                let old_value_idx = entry.value_pos();
-                let new_value_idx = self.values.append(value_bytes);
-                entry.set_new_kv(entry.key_pos(), new_value_idx);
-
-                // Return reference to the old value
-                Some(
-                    self.values
-                        .get(old_value_idx)
-                        .expect("value must exist for occupied entry"),
-                )
-            }
-        }
-    }
-
     fn grow(&mut self) -> Result<(), Box<dyn std::error::Error + Sync + Send>> {
         let new_capacity = if self.capacity == 0 {
             16
@@ -315,20 +274,6 @@ where
                 Ok(Some(value))
             }
             Err(_) => Ok(None),
-        }
-    }
-
-    /// Legacy get method for backward compatibility with AsRef<[u8]> types
-    pub fn get_raw<Q: AsRef<[u8]>>(&self, k: Q) -> Option<&[u8]> {
-        if self.is_empty() {
-            return None;
-        }
-        match self.find_slot(k.as_ref()) {
-            Ok(slot_idx) => {
-                let entry = &self.entries[slot_idx];
-                self.values.get(entry.value_pos())
-            }
-            Err(_) => None,
         }
     }
 
@@ -493,83 +438,83 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::VecStore;
     use crate::types::{Native, Str};
+    use crate::{Bytes, VecStore};
     use proptest::prelude::*;
     use rustc_hash::FxBuildHasher;
     use std::collections::HashMap as StdHashMap;
     use tempfile::tempdir;
 
-    type TestHashMap<K, V> = HashMap<K, V, VecStore, FxBuildHasher>;
+    type BytesHM = HashMap<Bytes, Bytes, VecStore, FxBuildHasher>;
 
     // Legacy tests using raw byte API for backward compatibility
     #[test]
     fn test_insert_and_get_raw() {
-        let mut map: TestHashMap<Vec<u8>, Vec<u8>> = HashMap::new();
+        let mut map: BytesHM = HashMap::new();
 
         // Insert a key-value pair using raw API
-        map.insert_raw(b"hello", b"world");
+        map.insert(b"hello", b"world").unwrap();
 
         // Get the value using raw API
-        let value = map.get_raw(b"hello");
+        let value = map.get(b"hello").unwrap();
         assert_eq!(value, Some(b"world".as_ref()));
 
         // Test non-existent key
-        let value = map.get_raw(b"not_found");
+        let value = map.get(b"not_found").unwrap();
         assert_eq!(value, None);
     }
 
     #[test]
     fn test_update_value_raw() {
-        let mut map: TestHashMap<Vec<u8>, Vec<u8>> = HashMap::new();
+        let mut map: BytesHM = HashMap::new();
 
         // Insert a key-value pair
-        map.insert_raw(b"key", b"value1");
-        assert_eq!(map.get_raw(b"key"), Some(b"value1".as_ref()));
+        map.insert(b"key", b"value1").unwrap();
+        assert_eq!(map.get(b"key").unwrap(), Some(b"value1".as_ref()));
 
         // Update the value
-        let old_value = map.insert_raw(b"key", b"value2");
+        let old_value = map.insert(b"key", b"value2").unwrap();
         assert_eq!(old_value, Some(b"value1".as_ref()));
 
         // Get the updated value
-        let value = map.get_raw(b"key");
+        let value = map.get(b"key").unwrap();
         assert_eq!(value, Some(b"value2".as_ref()));
         assert_eq!(map.len(), 1);
     }
 
     #[test]
     fn test_multiple_entries_raw() {
-        let mut map: TestHashMap<Vec<u8>, Vec<u8>> = HashMap::new();
+        let mut map: BytesHM = HashMap::new();
 
         // Insert multiple key-value pairs
-        map.insert_raw(b"key1", b"value1");
-        map.insert_raw(b"key2", b"value2");
-        map.insert_raw(b"key3", b"value3");
+        map.insert(b"key1", b"value1").unwrap();
+        map.insert(b"key2", b"value2").unwrap();
+        map.insert(b"key3", b"value3").unwrap();
 
         // Get values
-        assert_eq!(map.get_raw(b"key1"), Some(b"value1".as_ref()));
-        assert_eq!(map.get_raw(b"key2"), Some(b"value2".as_ref()));
-        assert_eq!(map.get_raw(b"key3"), Some(b"value3".as_ref()));
+        assert_eq!(map.get(b"key1").unwrap(), Some(b"value1".as_ref()));
+        assert_eq!(map.get(b"key2").unwrap(), Some(b"value2".as_ref()));
+        assert_eq!(map.get(b"key3").unwrap(), Some(b"value3".as_ref()));
     }
 
     #[test]
     fn test_empty_map() {
-        let map: TestHashMap<Vec<u8>, Vec<u8>> = HashMap::new();
+        let map: BytesHM = HashMap::new();
 
         // Map should be empty
         assert_eq!(map.len(), 0);
         assert!(map.is_empty());
 
         // Get on empty map
-        assert_eq!(map.get_raw(b"key"), None);
+        assert_eq!(map.get(b"key").unwrap(), None);
     }
 
     fn check_prop(hm: StdHashMap<Vec<u8>, Vec<u8>>) {
-        let mut map: TestHashMap<Vec<u8>, Vec<u8>> = HashMap::new();
+        let mut map: BytesHM = HashMap::new();
 
         // Insert all key-value pairs from the StdHashMap
         for (k, v) in hm.iter() {
-            map.insert_raw(k.clone(), v.clone());
+            map.insert(k.as_slice(), v.as_slice()).unwrap();
         }
 
         // Check the size of the map
@@ -577,7 +522,11 @@ mod tests {
 
         // Check that all values can be retrieved
         for (k, v) in hm.iter() {
-            assert_eq!(map.get_raw(k), Some(v.as_ref()), "key: {k:?}");
+            assert_eq!(
+                map.get(k.as_slice()).unwrap(),
+                Some(v.as_slice()),
+                "key: {k:?}"
+            );
         }
     }
 
@@ -685,42 +634,42 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path();
 
-        type FileMap<K, V> = HashMap<K, V, MMapFile, FxBuildHasher>;
+        type FileMap = HashMap<Bytes, Bytes, MMapFile, FxBuildHasher>;
 
         // 1. Create a new map and add some data
         {
-            let mut map: FileMap<Vec<u8>, Vec<u8>> = FileMap::new_in(path).unwrap();
-            map.insert_raw(b"key1", b"value1");
-            map.insert_raw(b"key2", b"value2");
+            let mut map: FileMap = FileMap::new_in(path).unwrap();
+            map.insert(b"key1", b"value1").unwrap();
+            map.insert(b"key2", b"value2").unwrap();
             assert_eq!(map.len(), 2);
-            assert_eq!(map.get_raw(b"key1"), Some(b"value1".as_ref()));
-            assert_eq!(map.get_raw(b"key2"), Some(b"value2".as_ref()));
+            assert_eq!(map.get(b"key1").unwrap(), Some(b"value1".as_ref()));
+            assert_eq!(map.get(b"key2").unwrap(), Some(b"value2".as_ref()));
         } // map is dropped, files should be persisted
 
         // 2. Load the map from disk
         {
-            let map: FileMap<Vec<u8>, Vec<u8>> = FileMap::load_from(path).unwrap();
+            let map: FileMap = FileMap::load_from(path).unwrap();
             assert_eq!(map.len(), 2);
-            assert_eq!(map.get_raw(b"key1"), Some(b"value1".as_ref()));
-            assert_eq!(map.get_raw(b"key2"), Some(b"value2".as_ref()));
-            assert_eq!(map.get_raw(b"key3"), None);
+            assert_eq!(map.get(b"key1").unwrap(), Some(b"value1".as_ref()));
+            assert_eq!(map.get(b"key2").unwrap(), Some(b"value2".as_ref()));
+            assert_eq!(map.get(b"key3").unwrap(), None);
         }
 
         // 3. Load again, and add more data
         {
-            let mut map: FileMap<Vec<u8>, Vec<u8>> = FileMap::load_from(path).unwrap();
-            map.insert_raw(b"key3", b"value3");
+            let mut map: FileMap = FileMap::load_from(path).unwrap();
+            map.insert(b"key3", b"value3").unwrap();
             assert_eq!(map.len(), 3);
-            assert_eq!(map.get_raw(b"key3"), Some(b"value3".as_ref()));
+            assert_eq!(map.get(b"key3").unwrap(), Some(b"value3".as_ref()));
         }
 
         // 4. Load one more time to check the new data is there
         {
-            let map: FileMap<Vec<u8>, Vec<u8>> = FileMap::load_from(path).unwrap();
+            let map: FileMap = FileMap::load_from(path).unwrap();
             assert_eq!(map.len(), 3);
-            assert_eq!(map.get_raw(b"key1"), Some(b"value1".as_ref()));
-            assert_eq!(map.get_raw(b"key2"), Some(b"value2".as_ref()));
-            assert_eq!(map.get_raw(b"key3"), Some(b"value3".as_ref()));
+            assert_eq!(map.get(b"key1").unwrap(), Some(b"value1".as_ref()));
+            assert_eq!(map.get(b"key2").unwrap(), Some(b"value2".as_ref()));
+            assert_eq!(map.get(b"key3").unwrap(), Some(b"value3".as_ref()));
         }
     }
 
@@ -738,7 +687,7 @@ mod tests {
         assert_eq!(key_store.stats(), 1);
         assert_eq!(value_store.stats(), 1);
 
-        let mut map: HashMap<Vec<u8>, Vec<u8>, _, FxBuildHasher> =
+        let mut map: HashMap<Bytes, Bytes, _, FxBuildHasher> =
             HashMap::with_stores(entry_store, key_store, value_store);
 
         let initial_stats = map.stats();
@@ -747,7 +696,8 @@ mod tests {
         // Insert 100 elements. Should not trigger any more resizes.
         for i in 0..100 {
             let s = i.to_string();
-            map.insert_raw(s.clone().into_bytes(), s.into_bytes());
+            map.insert(s.clone().into_bytes().as_slice(), s.into_bytes().as_slice())
+                .unwrap();
         }
         assert_eq!(
             map.stats(),
@@ -758,7 +708,8 @@ mod tests {
         // Insert more elements to trigger a resize of the entries container.
         for i in 100..150 {
             let s = i.to_string();
-            map.insert_raw(s.clone().into_bytes(), s.into_bytes());
+            map.insert(s.clone().into_bytes().as_slice(), s.into_bytes().as_slice())
+                .unwrap();
         }
 
         let (entries_resizes, keys_resizes, values_resizes) = map.stats();
@@ -778,7 +729,7 @@ mod tests {
 
     #[test]
     fn test_entry_api_vacant() {
-        let mut map: TestHashMap<Vec<u8>, Vec<u8>> = HashMap::new();
+        let mut map: BytesHM = HashMap::new();
 
         // Test vacant entry insertion
         match map.entry_raw(b"key1") {
@@ -790,15 +741,15 @@ mod tests {
         }
 
         assert_eq!(map.len(), 1);
-        assert_eq!(map.get_raw(b"key1"), Some(b"value1".as_ref()));
+        assert_eq!(map.get(b"key1").unwrap(), Some(b"value1".as_ref()));
     }
 
     #[test]
     fn test_entry_api_occupied() {
-        let mut map: TestHashMap<Vec<u8>, Vec<u8>> = HashMap::new();
+        let mut map: BytesHM = HashMap::new();
 
         // Insert initial value
-        map.insert_raw(b"key1", b"value1");
+        map.insert(b"key1", b"value1").unwrap();
 
         // Test occupied entry access and update
         match map.entry_raw(b"key1") {
@@ -811,12 +762,12 @@ mod tests {
         }
 
         assert_eq!(map.len(), 1);
-        assert_eq!(map.get_raw(b"key1"), Some(b"value2".as_ref()));
+        assert_eq!(map.get(b"key1").unwrap(), Some(b"value2".as_ref()));
     }
 
     #[test]
     fn test_entry_api_or_insert() {
-        let mut map: TestHashMap<Vec<u8>, Vec<u8>> = HashMap::new();
+        let mut map: BytesHM = HashMap::new();
 
         // Test or_insert with vacant entry
         match map.entry_raw(b"key1") {
@@ -828,13 +779,13 @@ mod tests {
         }
 
         // Test entry with existing key (should not create occupied entry in this test)
-        assert_eq!(map.get_raw(b"key1"), Some(b"value1".as_ref()));
+        assert_eq!(map.get(b"key1").unwrap(), Some(b"value1".as_ref()));
         assert_eq!(map.len(), 1);
     }
 
     #[test]
     fn test_entry_api_or_insert_with() {
-        let mut map: TestHashMap<Vec<u8>, Vec<u8>> = HashMap::new();
+        let mut map: BytesHM = HashMap::new();
 
         // Test or_insert_with with vacant entry
         match map.entry_raw(b"key1") {
@@ -845,31 +796,31 @@ mod tests {
             MapEntry::Occupied(_) => panic!("Expected vacant entry"),
         }
 
-        assert_eq!(map.get_raw(b"key1"), Some(b"computed_value".as_ref()));
+        assert_eq!(map.get(b"key1").unwrap(), Some(b"computed_value".as_ref()));
         assert_eq!(map.len(), 1);
     }
 
     #[test]
     fn test_insert_returns_previous_value() {
-        let mut map: TestHashMap<Vec<u8>, Vec<u8>> = HashMap::new();
+        let mut map: BytesHM = HashMap::new();
 
         // First insert should return None
-        let previous = map.insert_raw(b"key1", b"value1");
+        let previous = map.insert(b"key1", b"value1").unwrap();
         assert_eq!(previous, None);
 
         // Second insert should return previous value
-        let previous = map.insert_raw(b"key1", b"value2");
+        let previous = map.insert(b"key1", b"value2").unwrap();
         assert_eq!(previous, Some(b"value1".as_ref()));
 
         // Verify current value
-        assert_eq!(map.get_raw(b"key1"), Some(b"value2".as_ref()));
+        assert_eq!(map.get(b"key1").unwrap(), Some(b"value2".as_ref()));
         assert_eq!(map.len(), 1);
     }
 
     // New trait-based API tests
     #[test]
     fn test_native_u64_str_string() {
-        let mut map: HashMap<Native<u64>, Str<String>, VecStore> = HashMap::new();
+        let mut map: HashMap<Native<u64>, Str, VecStore> = HashMap::new();
 
         // Insert a key-value pair
         let result = map.insert(&42, "hello");
@@ -879,24 +830,24 @@ mod tests {
         // Get the value
         let result = map.get(&42u64);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), Some("hello".to_string()));
+        assert_eq!(result.unwrap(), Some("hello"));
 
         // Update the value
         let result = map.insert(&42u64, "world");
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), Some("hello".to_string()));
+        assert_eq!(result.unwrap(), Some("hello"));
 
         // Verify updated value
         let result = map.get(&42u64);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), Some("world".to_string()));
+        assert_eq!(result.unwrap(), Some("world"));
 
         assert_eq!(map.len(), 1);
     }
 
     #[test]
     fn test_str_string_native_u32() {
-        let mut map: HashMap<Str<String>, Native<u32>, VecStore> = HashMap::new();
+        let mut map: HashMap<Str, Native<u32>, VecStore> = HashMap::new();
 
         // Insert multiple pairs
         let key1 = "key1".to_string();
@@ -946,7 +897,7 @@ mod tests {
     #[test]
     fn test_convenience_methods() {
         // Test U64StringMap
-        let mut map: HashMap<Native<u64>, Str<String>, VecStore> = U64StringMap::new();
+        let mut map: HashMap<Native<u64>, Str, VecStore> = U64StringMap::new();
 
         let result = map.insert(&42, "hello");
         assert!(result.is_ok());
@@ -954,7 +905,7 @@ mod tests {
 
         let result = map.get(&42u64);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), Some("hello".to_string()));
+        assert_eq!(result.unwrap(), Some("hello"));
 
         // Test StringU64Map
         let mut map2: StringU64Map = StringU64Map::new();
@@ -976,6 +927,6 @@ mod tests {
 
         let result = map3.get("key");
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), Some("value".to_string()));
+        assert_eq!(result.unwrap(), Some("value"));
     }
 }
