@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 use std::error::Error;
+use std::hash::BuildHasher;
 use std::marker::PhantomData;
 
 /// Trait for encoding types into byte representation
@@ -8,6 +9,14 @@ pub trait BytesEncode<'a> {
 
     /// Encode an item into bytes
     fn bytes_encode(item: &'a Self::EItem) -> Result<Cow<'a, [u8]>, Box<dyn Error + Sync + Send>>;
+
+    fn eq_alt(l: &[u8], r: &[u8]) -> bool {
+        l == r
+    }
+
+    fn hash_alt<S: BuildHasher>(item: &[u8], s: &S) -> u64 {
+        s.hash_one(item)
+    }
 }
 
 /// Trait for decoding types from byte representation
@@ -17,6 +26,14 @@ pub trait BytesDecode<'a> {
     /// Decode bytes into an item
     fn bytes_decode(bytes: &'a [u8]) -> Result<Self::DItem, Box<dyn Error + Sync + Send>>;
 }
+
+// pub trait BytesEqHash<'a>: BytesEncode<'a> + BytesDecode<'a> + Default {
+//     /// Check if two items are equal
+//     fn bytes_eq(item1: &'a Self::EItem, item2: &'a Self::EItem) -> bool {}
+
+//     /// Get a hash of the item
+//     fn bytes_hash(item: &'a Self::EItem) -> u64;
+// }
 
 /// Wrapper for native types that can be represented as bytes (numbers, etc.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -51,12 +68,21 @@ impl Default for Bytes {
 // Implementations for Native<T>
 impl<'a, T> BytesEncode<'a> for Native<T>
 where
-    T: bytemuck::Pod,
+    T: bytemuck::Pod + Eq + std::hash::Hash,
 {
     type EItem = T;
 
     fn bytes_encode(item: &'a Self::EItem) -> Result<Cow<'a, [u8]>, Box<dyn Error + Sync + Send>> {
         Ok(Cow::Borrowed(bytemuck::bytes_of(item)))
+    }
+
+    fn eq_alt(l: &[u8], r: &[u8]) -> bool {
+        bytemuck::from_bytes::<T>(l) == bytemuck::from_bytes::<T>(r)
+    }
+
+    fn hash_alt<S: BuildHasher>(item: &[u8], s: &S) -> u64 {
+        let value = bytemuck::from_bytes::<T>(item);
+        s.hash_one(value)
     }
 }
 

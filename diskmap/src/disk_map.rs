@@ -136,12 +136,17 @@ where
     /// Find the slot index for a key
     /// if the key is found, returns Some(index),
     /// if the key is not found return the first empty slot index
-    fn find_slot(&self, key: &[u8]) -> Result<usize, usize> {
+    fn find_slot(
+        &self,
+        key: &[u8],
+        mut eq_fn: impl FnMut(&[u8], &[u8]) -> bool,
+        hash_fn: impl Fn(&[u8]) -> u64,
+    ) -> Result<usize, usize> {
         if self.capacity == 0 {
             return Err(0);
         }
 
-        let hash = self.hash_key(key);
+        let hash = hash_fn(key); //self.hash_key(key);
         let mut index = hash as usize % self.capacity;
 
         // Linear probing
@@ -155,7 +160,9 @@ where
             if !entry.is_deleted() {
                 // Check if this is our key
                 if let Some(stored_key) = self.keys.get(entry.key_pos()) {
-                    if key == stored_key {
+                    if
+                    /*  key == stored_key  */
+                    eq_fn(key, stored_key) {
                         return Ok(index);
                     }
                 }
@@ -165,54 +172,6 @@ where
         }
 
         Err(self.capacity)
-    }
-
-    /// Insert a key-value pair into the map using the trait-based API
-    pub fn insert<'a>(
-        &mut self,
-        key: &'a K::EItem,
-        value: &'a V::EItem,
-    ) -> Result<Option<<V as BytesDecode<'_>>::DItem>, Box<dyn std::error::Error + Sync + Send>>
-    where
-        K: BytesEncode<'a>,
-        V: BytesEncode<'a>,
-        for<'b> V: BytesDecode<'b>,
-    {
-        if self.should_resize() {
-            self.grow()?;
-        }
-
-        let key_bytes = K::bytes_encode(key)?;
-        let value_bytes = V::bytes_encode(value)?;
-
-        match self.find_slot(&key_bytes) {
-            Err(slot_idx) => {
-                // Found an empty slot, insert new key-value pair
-                let key_idx = self.keys.append(&key_bytes);
-                let value_idx = self.values.append(&value_bytes);
-
-                self.entries[slot_idx] = Entry::occupied_at_pos(key_idx, value_idx);
-                self.size += 1;
-
-                Ok(None)
-            }
-            Ok(slot_idx) => {
-                // Key already exists, update value
-                let entry = &mut self.entries[slot_idx];
-                let old_value_idx = entry.value_pos();
-                let new_value_idx = self.values.append(&value_bytes);
-                entry.set_new_kv(entry.key_pos(), new_value_idx);
-
-                // Get the old value after the mutation
-                let old_value_bytes = self
-                    .values
-                    .get(old_value_idx)
-                    .expect("value must exist for occupied entry");
-                let old_value = V::bytes_decode(old_value_bytes)?;
-
-                Ok(Some(old_value))
-            }
-        }
     }
 
     fn grow(&mut self) -> Result<(), Box<dyn std::error::Error + Sync + Send>> {
@@ -249,6 +208,75 @@ where
         Ok(())
     }
 
+    pub fn stats(&self) -> (u64, u64, u64) {
+        (
+            self.entries.store().stats(),
+            self.keys.store().stats(),
+            self.values.store().stats(),
+        )
+    }
+}
+
+impl<K, V, BS: ByteStore, S: BuildHasher + Default> HashMap<K, V, BS, S> {
+    /// Insert a key-value pair into the map using the trait-based API
+    pub fn insert<'a>(
+        &mut self,
+        key: &'a K::EItem,
+        value: &'a V::EItem,
+    ) -> Result<Option<<V as BytesDecode<'_>>::DItem>, Box<dyn std::error::Error + Sync + Send>>
+    where
+        K: BytesEncode<'a>,
+        V: BytesEncode<'a>,
+        for<'b> V: BytesDecode<'b>,
+    {
+        if self.should_resize() {
+            self.grow()?;
+        }
+
+        let key_bytes = K::bytes_encode(key)?;
+        let value_bytes = V::bytes_encode(value)?;
+
+        match self.find_slot_inner(&key_bytes) {
+            Err(slot_idx) => {
+                // Found an empty slot, insert new key-value pair
+                let key_idx = self.keys.append(&key_bytes);
+                let value_idx = self.values.append(&value_bytes);
+
+                self.entries[slot_idx] = Entry::occupied_at_pos(key_idx, value_idx);
+                self.size += 1;
+
+                Ok(None)
+            }
+            Ok(slot_idx) => {
+                // Key already exists, update value
+                let entry = &mut self.entries[slot_idx];
+                let old_value_idx = entry.value_pos();
+                let new_value_idx = self.values.append(&value_bytes);
+                entry.set_new_kv(entry.key_pos(), new_value_idx);
+
+                // Get the old value after the mutation
+                let old_value_bytes = self
+                    .values
+                    .get(old_value_idx)
+                    .expect("value must exist for occupied entry");
+                let old_value = V::bytes_decode(old_value_bytes)?;
+
+                Ok(Some(old_value))
+            }
+        }
+    }
+
+    fn find_slot_inner<'a>(&self, key: &[u8]) -> Result<usize, usize>
+    where
+        K: BytesEncode<'a>,
+    {
+        self.find_slot(
+            key,
+            |l, r| <K as BytesEncode>::eq_alt(l, r),
+            |k| K::hash_alt(k, &self.hasher),
+        )
+    }
+
     /// Get a value by key using the trait-based API
     pub fn get<'a>(
         &self,
@@ -263,7 +291,7 @@ where
         }
 
         let key_bytes = K::bytes_encode(key)?;
-        match self.find_slot(&key_bytes) {
+        match self.find_slot_inner(&key_bytes) {
             Ok(slot_idx) => {
                 let entry = &self.entries[slot_idx];
                 let value_bytes = self
@@ -278,13 +306,17 @@ where
     }
 
     /// Get an entry for the given key, allowing for efficient insertion/access patterns
-    pub fn entry_raw<Q: AsRef<[u8]>>(&mut self, key: Q) -> MapEntry<'_, K, V, BS, S> {
+    pub fn entry_raw<Q: AsRef<[u8]>>(&mut self, key: Q) -> MapEntry<'_, K, V, BS, S>
+    where
+        for<'a> K: BytesEncode<'a>,
+        for<'b> V: BytesDecode<'b>,
+    {
         if self.should_resize() {
             let _ = self.grow();
         }
 
         let key_bytes = key.as_ref();
-        match self.find_slot(key_bytes) {
+        match self.find_slot_inner(key_bytes) {
             Ok(slot_idx) => MapEntry::Occupied(OccupiedEntry {
                 map: self,
                 slot_idx,
@@ -295,14 +327,6 @@ where
                 slot_idx,
             }),
         }
-    }
-
-    pub fn stats(&self) -> (u64, u64, u64) {
-        (
-            self.entries.store().stats(),
-            self.keys.store().stats(),
-            self.values.store().stats(),
-        )
     }
 }
 
