@@ -172,8 +172,6 @@ where
         Err(self.capacity)
     }
 
-
-
     pub fn stats(&self) -> (u64, u64, u64) {
         (
             self.entries.store().stats(),
@@ -183,11 +181,14 @@ where
     }
 }
 
-impl<K: for<'a> BytesEncode<'a>, V: for<'a> BytesEncode<'a> + for<'a> BytesDecode<'a>, BS: ByteStore, S: BuildHasher + Default> HashMap<K, V, BS, S>
+impl<
+    K: for<'a> BytesEncode<'a>,
+    V: for<'a> BytesEncode<'a> + for<'a> BytesDecode<'a>,
+    BS: ByteStore,
+    S: BuildHasher + Default,
+> HashMap<K, V, BS, S>
 {
-
-    fn grow(&mut self) -> Result<(), Box<dyn std::error::Error + Sync + Send>>
-    {
+    fn grow(&mut self) -> Result<(), Box<dyn std::error::Error + Sync + Send>> {
         let new_capacity = if self.capacity == 0 {
             16
         } else {
@@ -266,8 +267,7 @@ impl<K: for<'a> BytesEncode<'a>, V: for<'a> BytesEncode<'a> + for<'a> BytesDecod
         }
     }
 
-    fn find_slot_inner<'a>(&self, key: &[u8]) -> Result<usize, usize>
-    {
+    fn find_slot_inner<'a>(&self, key: &[u8]) -> Result<usize, usize> {
         self.find_slot(
             key,
             |l, r| <K as BytesEncode>::eq_alt(l, r),
@@ -532,8 +532,13 @@ mod tests {
         let mut map: BytesHM = HashMap::new();
 
         // Insert all key-value pairs from the StdHashMap
+        let mut already_inserted = vec![];
         for (k, v) in hm.iter() {
             map.insert(k.as_slice(), v.as_slice()).unwrap();
+            already_inserted.push((k.clone(), v.clone()));
+            for (k, v) in &already_inserted {
+                assert_eq!(map.get(k).unwrap(), Some(v.as_slice()), "key: {k:?}");
+            }
         }
 
         // Check the size of the map
@@ -549,6 +554,28 @@ mod tests {
         }
     }
 
+    fn check_prop_native(hm: StdHashMap<u64, u64>) {
+        let mut map: HashMap<Native<u64>, Native<u64>, VecStore, FxBuildHasher> = HashMap::new();
+
+        // Insert all key-value pairs from the StdHashMap
+        let mut already_inserted = vec![];
+        for (k, v) in hm.iter() {
+            map.insert(k, v).unwrap();
+            already_inserted.push((*k, *v));
+            for (k, v) in &already_inserted {
+                assert_eq!(map.get(k).unwrap(), Some(*v), "key: {k:?}");
+            }
+        }
+
+        // Check the size of the map
+        assert_eq!(map.len(), hm.len());
+
+        // Check that all values can be retrieved
+        for (k, v) in hm.iter() {
+            assert_eq!(map.get(k).unwrap(), Some(*v), "key: {k:?}");
+        }
+    }
+
     #[test]
     fn it_s_a_hash_map() {
         let small_hash_map_prop = proptest::collection::hash_map(
@@ -559,6 +586,19 @@ mod tests {
 
         proptest!(|(values in small_hash_map_prop)|{
             check_prop(values);
+        });
+    }
+
+    #[test]
+    fn it_s_a_hash_map_native() {
+        let small_hash_map_prop = proptest::collection::hash_map(
+            proptest::num::u64::ANY,
+            proptest::num::u64::ANY,
+            1..250,
+        );
+
+        proptest!(|(values in small_hash_map_prop)|{
+            check_prop_native(values);
         });
     }
 

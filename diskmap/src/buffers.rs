@@ -186,6 +186,13 @@ impl<T: ByteStore> Buffers<T> {
         bytemuck::cast_slice(offset_bytes)
     }
 
+    fn offsets_mut(&mut self) -> &mut [usize] {
+        let offsets_start = Self::header_size();
+        let offsets_end = self.offsets_end();
+        let offset_bytes = &mut self.bs_mut()[offsets_start..offsets_end];
+        bytemuck::cast_slice_mut(offset_bytes)
+    }
+
     /// Create a slice of the buffers from [start, end)
     pub fn slice(&self, start: usize, end: usize) -> BuffersSlice<'_, T> {
         assert!(start <= end, "start must be <= end");
@@ -247,10 +254,8 @@ impl<T: ByteStore> Buffers<T> {
         self.set_count();
 
         // Write new cumulative offset
-        let new_offset_start = Self::header_size() + self.count * offset_size;
-        let new_offset_end = new_offset_start + offset_size;
-        self.bs_mut()[new_offset_start..new_offset_end]
-            .copy_from_slice(&cumulative_len.to_le_bytes());
+        let count = self.count;
+        self.offsets_mut()[count] = cumulative_len;
 
         index
     }
