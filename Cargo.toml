@@ -4,9 +4,10 @@ resolver = "2"
 
 [workspace.package]
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [workspace.dependencies]
+rkyv = "0.8.11"
 proptest = "1.7.0"
 proptest-derive = "0.6.0"
 memmap2 = "0.9.7"

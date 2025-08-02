@@ -595,9 +595,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{Native, Str};
+    use crate::types::{Arch, Native, Str};
     use crate::{Bytes, VecStore};
     use proptest::prelude::*;
+    use rkyv::{Archive, Deserialize, Serialize};
     use rustc_hash::FxBuildHasher;
     use std::collections::HashMap as StdHashMap;
     use tempfile::tempdir;
@@ -1145,5 +1146,105 @@ mod tests {
         let result = map3.get("key");
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), Some("value"));
+    }
+
+    /// A complex data structure that we want to store and retrieve efficiently
+    #[derive(Archive, Deserialize, Serialize, Debug, Clone, PartialEq)]
+    pub struct UserProfile {
+        pub id: u32,
+        pub name: String,
+        pub tags: Vec<String>,
+        pub scores: Vec<f64>,
+        pub metadata: Vec<(String, String)>,
+    }
+
+    impl UserProfile {
+        fn new(id: u32, name: &str) -> Self {
+            Self {
+                id,
+                name: name.to_string(),
+                tags: vec!["user".to_string(), "active".to_string()],
+                scores: vec![85.5, 92.1, 78.3],
+                metadata: vec![
+                    ("created".to_string(), "2024-01-15".to_string()),
+                    ("last_login".to_string(), "2024-01-20".to_string()),
+                ],
+            }
+        }
+
+        /// Serialize this UserProfile to bytes using rkyv
+        fn to_bytes(&self) -> Vec<u8> {
+            rkyv::to_bytes::<rkyv::rancor::Error>(self)
+                .unwrap()
+                .to_vec()
+        }
+
+        /// Deserialize from bytes without copying (zero-copy)
+        fn from_bytes(
+            bytes: &[u8],
+        ) -> Result<&rkyv::Archived<UserProfile>, Box<dyn std::error::Error + Send + Sync>>
+        {
+            let archived = rkyv::access::<rkyv::Archived<UserProfile>, rkyv::rancor::Error>(bytes)
+                .map_err(|e| format!("Validation failed: {e}"))?;
+            Ok(archived)
+        }
+    }
+
+    #[test]
+    fn simple_mmap_only_no_hash_map_rkyv_zerocopy() {
+        let tmp_file = tempfile::NamedTempFile::new().expect("Failed to create temp dir");
+
+        // Create a UserProfile instance
+        let check_alignment = |offset: usize| {
+            let user = UserProfile::new(1, "Integration Test");
+
+            // Serialize to bytes using rkyv
+            let user_bytes = user.to_bytes();
+
+            // Create a memory-mapped file and write the bytes
+            let mut mmap_file = MMapFile::new(&tmp_file, 1024).expect("Failed to create mmap file");
+            let aligned_range = offset..user_bytes.len() + offset;
+            let items = &mut mmap_file.as_mut()[aligned_range.clone()];
+            dbg!(align_of_val(items));
+            dbg!(align_of_val(&user_bytes));
+            items.copy_from_slice(&user_bytes);
+
+            // Read back the bytes from the mmap file
+            let read_bytes = mmap_file.as_ref();
+
+            // Deserialize without copying (zero-copy)
+            let archived_user = UserProfile::from_bytes(&read_bytes[aligned_range])
+                .expect("Failed to deserialize UserProfile from bytes");
+
+            assert_eq!(archived_user.id, 1);
+            assert_eq!(archived_user.name, "Integration Test");
+        };
+
+        check_alignment(0);
+        check_alignment(8); // Check with 8-byte alignment
+        check_alignment(16); // Check with 16-byte alignment
+        check_alignment(32); // Check with 16-byte alignment
+        // check_alignment(1) this will fail, as it is not aligned
+    }
+
+    #[test]
+    fn archived_map() {
+        let tempdir = tempfile::tempdir().expect("Failed to create temp dir");
+
+        let mut map: HashMap<Native<u64>, Arch<UserProfile>, MMapFile, FxBuildHasher> =
+            HashMap::new_in(tempdir.path()).unwrap();
+
+        let user = UserProfile::new(1, "Integration Test");
+
+        map.insert(&3, &user)
+            .expect("Failed to insert user profile into the map");
+
+        let user = map
+            .get(&3)
+            .expect("Failed to retrieve user profile from the map")
+            .expect("User profile not found in the map");
+
+        assert_eq!(user.id, 1);
+        assert_eq!(user.name, "Integration Test");
     }
 }

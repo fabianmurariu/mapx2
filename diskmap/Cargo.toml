@@ -5,6 +5,7 @@ edition = "2024"
 resolver = "3"
 
 [dependencies]
+rkyv.workspace = true
 
 modular-bitfield.workspace = true
 bytemuck = { version = "1.16.0", features = ["derive"] }
