@@ -6,7 +6,7 @@
 [![Crates.io](https://img.shields.io/crates/v/diskmap.svg)](https://crates.io/crates/diskmap)
 [![Documentation](https://docs.rs/diskmap/badge.svg)](https://docs.rs/diskmap)
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](https://github.com/fabianmurariu/mapx2)
-[![Rust Version](https://img.shields.io/badge/rust-1.70%2B-blue.svg)](https://github.com/fabianmurariu/mapx2)
+[![Rust Version](https://img.shields.io/badge/rust-1.88%2B-blue.svg)](https://github.com/fabianmurariu/mapx2)
 
 High-performance, persistent hash maps for Rust with **zero-copy deserialization** support and **memory-mapped file backing**.
 
