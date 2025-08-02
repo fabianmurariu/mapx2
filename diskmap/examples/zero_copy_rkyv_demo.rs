@@ -93,7 +93,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             profile.name, profile.email
         );
 
-        // The profile data is accessed with zero deserialization overhead!
+        // The profile data is accessed with zero deserialization overhead !
         // It's a direct view into the memory-mapped file data.
     }
 
