@@ -27,6 +27,33 @@ where
     Vacant(VacantEntry<'a, K, V, BS, S>),
 }
 
+impl<K, V, BS, S> MapEntry<'_, K, V, BS, S>
+where
+    BS: ByteStore,
+    S: BuildHasher + Default,
+{
+    /// Returns true if the entry is occupied
+    pub fn is_occupied(&self) -> bool {
+        matches!(self, MapEntry::Occupied(_))
+    }
+
+    /// Returns true if the entry is vacant
+    pub fn is_vacant(&self) -> bool {
+        matches!(self, MapEntry::Vacant(_))
+    }
+
+    pub fn key(&self) -> <K as BytesDecode<'_>>::DItem
+    where
+        K: for<'a> BytesDecode<'a>,
+    {
+        let k = match self {
+            MapEntry::Occupied(entry) => <K as BytesDecode>::bytes_decode(entry.key_bytes()),
+            MapEntry::Vacant(entry) => <K as BytesDecode>::bytes_decode(&entry.key),
+        };
+        k.expect("Failed to decode key")
+    }
+}
+
 /// A view into an occupied entry in the map
 pub struct OccupiedEntry<'a, K, V, BS, S = FxBuildHasher>
 where
@@ -179,6 +206,17 @@ where
             self.values.store().stats(),
         )
     }
+
+    /// Insert a new entry at the given slot index
+    fn insert_new_entry(&mut self, slot_idx: usize, key_bytes: &[u8], value_bytes: &[u8]) -> Entry {
+        let key_idx = self.keys.append(key_bytes);
+        let value_idx = self.values.append(value_bytes);
+
+        let entry = Entry::occupied_at_pos(key_idx, value_idx);
+        self.entries[slot_idx] = entry;
+        self.size += 1;
+        entry
+    }
 }
 
 impl<
@@ -237,37 +275,52 @@ impl<
         let key_bytes = K::bytes_encode(key)?;
         let value_bytes = V::bytes_encode(value)?;
 
-        match self.find_slot_inner(&key_bytes) {
+        self.insert_key_value_bytes(&key_bytes, &value_bytes)
+    }
+
+    /// Common insertion logic for key-value pairs using raw bytes
+    fn insert_key_value_bytes(
+        &mut self,
+        key_bytes: &[u8],
+        value_bytes: &[u8],
+    ) -> Result<Option<<V as BytesDecode<'_>>::DItem>, Box<dyn std::error::Error + Sync + Send>>
+    {
+        match self.find_slot_inner(key_bytes) {
             Err(slot_idx) => {
                 // Found an empty slot, insert new key-value pair
-                let key_idx = self.keys.append(&key_bytes);
-                let value_idx = self.values.append(&value_bytes);
-
-                self.entries[slot_idx] = Entry::occupied_at_pos(key_idx, value_idx);
-                self.size += 1;
-
+                self.insert_new_entry(slot_idx, key_bytes, value_bytes);
                 Ok(None)
             }
             Ok(slot_idx) => {
                 // Key already exists, update value
-                let entry = &mut self.entries[slot_idx];
-                let old_value_idx = entry.value_pos();
-                let new_value_idx = self.values.append(&value_bytes);
-                entry.set_new_kv(entry.key_pos(), new_value_idx);
-
-                // Get the old value after the mutation
-                let old_value_bytes = self
-                    .values
-                    .get(old_value_idx)
-                    .expect("value must exist for occupied entry");
-                let old_value = V::bytes_decode(old_value_bytes)?;
-
-                Ok(Some(old_value))
+                self.update_existing_entry(slot_idx, value_bytes)
             }
         }
     }
 
-    fn find_slot_inner<'a>(&self, key: &[u8]) -> Result<usize, usize> {
+    /// Update an existing entry at the given slot index
+    fn update_existing_entry(
+        &mut self,
+        slot_idx: usize,
+        value_bytes: &[u8],
+    ) -> Result<Option<<V as BytesDecode<'_>>::DItem>, Box<dyn std::error::Error + Sync + Send>>
+    {
+        let entry = &mut self.entries[slot_idx];
+        let old_value_idx = entry.value_pos();
+        let new_value_idx = self.values.append(value_bytes);
+        entry.set_new_kv(entry.key_pos(), new_value_idx);
+
+        // Get the old value after the mutation
+        let old_value_bytes = self
+            .values
+            .get(old_value_idx)
+            .expect("value must exist for occupied entry");
+        let old_value = V::bytes_decode(old_value_bytes)?;
+
+        Ok(Some(old_value))
+    }
+
+    fn find_slot_inner(&self, key: &[u8]) -> Result<usize, usize> {
         self.find_slot(
             key,
             |l, r| <K as BytesEncode>::eq_alt(l, r),
@@ -300,8 +353,21 @@ impl<
         }
     }
 
+    /// Get an entry for the given key using trait-based API
+    pub fn entry<'a>(
+        &'a mut self,
+        key: &'a <K as BytesEncode<'a>>::EItem,
+    ) -> Result<MapEntry<'a, K, V, BS, S>, Box<dyn std::error::Error + Sync + Send>>
+    where
+        for<'b> K: BytesEncode<'b>,
+        for<'b> V: BytesDecode<'b>,
+    {
+        let key_bytes = K::bytes_encode(key)?;
+        Ok(self.entry_raw(key_bytes.as_ref()))
+    }
+
     /// Get an entry for the given key, allowing for efficient insertion/access patterns
-    pub fn entry_raw<Q: AsRef<[u8]>>(&mut self, key: Q) -> MapEntry<'_, K, V, BS, S>
+    fn entry_raw<Q: AsRef<[u8]>>(&mut self, key: Q) -> MapEntry<'_, K, V, BS, S>
     where
         for<'a> K: BytesEncode<'a>,
         for<'b> V: BytesDecode<'b>,
@@ -395,28 +461,78 @@ where
     BS: ByteStore,
     S: BuildHasher + Default,
 {
+    /// Get a reference to the key in the entry
+    pub fn key_bytes(&self) -> &[u8] {
+        let entry = &self.map.entries[self.slot_idx];
+        self.map
+            .keys
+            .get(entry.key_pos())
+            .expect("key must exist for occupied entry")
+    }
+
     /// Get a reference to the value in the entry
-    pub fn get(&self) -> &[u8] {
+    pub fn value_bytes(&self) -> &[u8] {
         let entry = &self.map.entries[self.slot_idx];
         self.map
             .values
             .get(entry.value_pos())
             .expect("value must exist for occupied entry")
     }
+}
+
+// Trait-based extensions for OccupiedEntry
+impl<'a, K, V, BS, S> OccupiedEntry<'a, K, V, BS, S>
+where
+    BS: ByteStore,
+    S: BuildHasher + Default,
+    K: for<'b> BytesEncode<'b>,
+    V: for<'b> BytesEncode<'b> + for<'b> BytesDecode<'b>,
+{
+    /// Get the value in the entry using the trait-based API
+    pub fn get(
+        &self,
+    ) -> Result<<V as BytesDecode<'_>>::DItem, Box<dyn std::error::Error + Sync + Send>> {
+        let value_bytes = self.value_bytes();
+        V::bytes_decode(value_bytes)
+    }
 
     /// Insert a new value into the entry, returning the old value
-    pub fn insert<V2: AsRef<[u8]>>(&mut self, value: V2) -> &[u8] {
-        let entry = &mut self.map.entries[self.slot_idx];
-        let old_value_idx = entry.value_pos();
-        let new_value_idx = self.map.values.append(value.as_ref());
-
-        // Update the value index in the entry, keeping the key pos
-        entry.set_new_kv(entry.key_pos(), new_value_idx);
-
+    fn insert_bytes<V2: AsRef<[u8]>>(
+        self,
+        value: V2,
+    ) -> Result<<V as BytesDecode<'a>>::DItem, Box<dyn std::error::Error + Send + Sync>> {
         self.map
-            .values
-            .get(old_value_idx)
-            .expect("value must exist for occupied entry")
+            .update_existing_entry(self.slot_idx, value.as_ref())
+            .map(|r| r.unwrap())
+    }
+
+    /// Insert the value into the vacant entry using the trait-based API
+    /// Returns the raw bytes since we can't return borrowed decoded value from a consuming method
+    pub fn insert(
+        self,
+        value: &'a <V as BytesEncode<'a>>::EItem,
+    ) -> Result<<V as BytesDecode<'a>>::DItem, Box<dyn std::error::Error + Sync + Send>> {
+        let value_bytes = V::bytes_encode(value)?;
+        self.insert_bytes(value_bytes.as_ref())
+    }
+
+    /// Insert the value into the vacant entry using trait-based API if vacant
+    pub fn or_insert(
+        self,
+        value: &'a <V as BytesEncode<'a>>::EItem,
+    ) -> Result<<V as BytesDecode<'a>>::DItem, Box<dyn std::error::Error + Sync + Send>> {
+        self.insert(value)
+    }
+
+    /// Insert the value returned by the closure if the entry is vacant using trait-based API
+    pub fn or_insert_with<F>(
+        self,
+        f: F,
+    ) -> Result<<V as BytesDecode<'a>>::DItem, Box<dyn std::error::Error + Sync + Send>>
+    where
+        F: FnOnce() -> &'a <V as BytesEncode<'a>>::EItem,
+    {
+        self.insert(f())
     }
 }
 
@@ -426,29 +542,51 @@ where
     S: BuildHasher + Default,
 {
     /// Insert the value into the vacant entry, returning a reference to the inserted value
-    pub fn insert<V2: AsRef<[u8]>>(self, value: V2) -> &'a [u8] {
-        let key_idx = self.map.keys.append(&self.key);
-        let value_idx = self.map.values.append(value.as_ref());
-
-        self.map.entries[self.slot_idx] = Entry::occupied_at_pos(key_idx, value_idx);
-        self.map.size += 1;
-
+    fn insert_bytes<V2: AsRef<[u8]>>(self, value: V2) -> &'a [u8] {
+        let entry = self
+            .map
+            .insert_new_entry(self.slot_idx, &self.key, value.as_ref());
         self.map
             .values
-            .get(value_idx)
+            .get(entry.value_pos())
             .expect("value was just inserted")
     }
+}
 
-    /// Insert the value into the vacant entry if it's vacant, or return reference to existing value
-    pub fn or_insert<V2: AsRef<[u8]>>(self, value: V2) -> &'a [u8] {
+// Trait-based extensions for VacantEntry
+impl<'a, K, V, BS, S> VacantEntry<'a, K, V, BS, S>
+where
+    BS: ByteStore,
+    S: BuildHasher + Default,
+    K: for<'b> BytesEncode<'b>,
+    V: for<'b> BytesEncode<'b> + for<'b> BytesDecode<'b>,
+{
+    /// Insert the value into the vacant entry using the trait-based API
+    /// Returns the raw bytes since we can't return borrowed decoded value from a consuming method
+    pub fn insert(
+        self,
+        value: &'a <V as BytesEncode<'a>>::EItem,
+    ) -> Result<<V as BytesDecode<'a>>::DItem, Box<dyn std::error::Error + Sync + Send>> {
+        let value_bytes = V::bytes_encode(value)?;
+        let old_bytes = self.insert_bytes(value_bytes.as_ref());
+        V::bytes_decode(old_bytes)
+    }
+
+    /// Insert the value into the vacant entry using trait-based API if vacant
+    pub fn or_insert(
+        self,
+        value: &'a <V as BytesEncode<'a>>::EItem,
+    ) -> Result<<V as BytesDecode<'a>>::DItem, Box<dyn std::error::Error + Sync + Send>> {
         self.insert(value)
     }
 
-    /// Insert the value returned by the closure if the entry is vacant
-    pub fn or_insert_with<F, V2>(self, f: F) -> &'a [u8]
+    /// Insert the value returned by the closure if the entry is vacant using trait-based API
+    pub fn or_insert_with<F>(
+        self,
+        f: F,
+    ) -> Result<<V as BytesDecode<'a>>::DItem, Box<dyn std::error::Error + Sync + Send>>
     where
-        F: FnOnce() -> V2,
-        V2: AsRef<[u8]>,
+        F: FnOnce() -> &'a <V as BytesEncode<'a>>::EItem,
     {
         self.insert(f())
     }
@@ -538,6 +676,16 @@ mod tests {
             already_inserted.push((k.clone(), v.clone()));
             for (k, v) in &already_inserted {
                 assert_eq!(map.get(k).unwrap(), Some(v.as_slice()), "key: {k:?}");
+
+                let entry = map.entry(k).unwrap();
+                assert!(entry.is_occupied());
+                assert_eq!(entry.key(), k);
+                match entry {
+                    MapEntry::Occupied(occupied) => {
+                        assert_eq!(occupied.value_bytes(), v);
+                    }
+                    MapEntry::Vacant(_) => panic!("Expected occupied entry"),
+                }
             }
         }
 
@@ -564,6 +712,16 @@ mod tests {
             already_inserted.push((*k, *v));
             for (k, v) in &already_inserted {
                 assert_eq!(map.get(k).unwrap(), Some(*v), "key: {k:?}");
+
+                let entry = map.entry(k).unwrap();
+                assert!(entry.is_occupied());
+                assert_eq!(entry.key(), *k);
+                match entry {
+                    MapEntry::Occupied(occupied) => {
+                        assert_eq!(occupied.get().unwrap(), *v);
+                    }
+                    MapEntry::Vacant(_) => panic!("Expected occupied entry"),
+                }
             }
         }
 
@@ -793,7 +951,7 @@ mod tests {
         // Test vacant entry insertion
         match map.entry_raw(b"key1") {
             MapEntry::Vacant(entry) => {
-                let value_ref = entry.insert(b"value1");
+                let value_ref = entry.insert_bytes(b"value1");
                 assert_eq!(value_ref, b"value1");
             }
             MapEntry::Occupied(_) => panic!("Expected vacant entry"),
@@ -811,10 +969,10 @@ mod tests {
         map.insert(b"key1", b"value1").unwrap();
 
         // Test occupied entry access and update
-        match map.entry_raw(b"key1") {
-            MapEntry::Occupied(mut entry) => {
-                assert_eq!(entry.get(), b"value1");
-                let old_value = entry.insert(b"value2");
+        match map.entry(b"key1").unwrap() {
+            MapEntry::Occupied(entry) => {
+                assert_eq!(entry.value_bytes(), b"value1");
+                let old_value = entry.insert(b"value2").unwrap();
                 assert_eq!(old_value, b"value1");
             }
             MapEntry::Vacant(_) => panic!("Expected occupied entry"),
@@ -829,9 +987,9 @@ mod tests {
         let mut map: BytesHM = HashMap::new();
 
         // Test or_insert with vacant entry
-        match map.entry_raw(b"key1") {
+        match map.entry(b"key1").unwrap() {
             MapEntry::Vacant(entry) => {
-                let value_ref = entry.or_insert(b"value1");
+                let value_ref = entry.or_insert(b"value1").unwrap();
                 assert_eq!(value_ref, b"value1");
             }
             MapEntry::Occupied(_) => panic!("Expected vacant entry"),
@@ -847,9 +1005,9 @@ mod tests {
         let mut map: BytesHM = HashMap::new();
 
         // Test or_insert_with with vacant entry
-        match map.entry_raw(b"key1") {
+        match map.entry(b"key1").unwrap() {
             MapEntry::Vacant(entry) => {
-                let value_ref = entry.or_insert_with(|| b"computed_value".to_vec());
+                let value_ref = entry.or_insert_with(|| b"computed_value").unwrap();
                 assert_eq!(value_ref, b"computed_value");
             }
             MapEntry::Occupied(_) => panic!("Expected vacant entry"),
@@ -948,7 +1106,7 @@ mod tests {
         // Verify all values are still accessible
         for i in 0u8..20 {
             let result = map.get(&i);
-            assert!(result.is_ok(), "Failed to get key {}", i);
+            assert!(result.is_ok(), "Failed to get key {i}");
             assert_eq!(result.unwrap(), Some(i * 2));
         }
     }
