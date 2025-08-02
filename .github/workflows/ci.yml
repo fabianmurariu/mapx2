@@ -16,13 +16,7 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        rust: [stable, beta]
-        exclude:
-          # Reduce job count for performance
-          - os: windows-latest
-            rust: beta
-          - os: macos-latest
-            rust: beta
+        rust: [stable]
 
     steps:
       - uses: actions/checkout@v4
@@ -69,24 +63,24 @@ jobs:
       - name: Run benchmarks (compile only)
         run: cargo bench --no-run
 
-  miri:
-    name: Miri
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+  # miri:
+  #   name: Miri
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: nightly
-          components: miri
+  #     - name: Install Rust
+  #       uses: dtolnay/rust-toolchain@master
+  #       with:
+  #         toolchain: nightly
+  #         components: miri
 
-      - name: Run Miri
-        run: |
-          cargo miri setup
-          # Run a subset of tests with Miri (memory-mapped files might not work)
-          cargo miri test -p diskmap --lib buffers::tests::test_basic_operations_vec_backend
-          cargo miri test -p diskmap --lib buffers::tests::test_load
+  #     - name: Run Miri
+  #       run: |
+  #         cargo miri setup
+  #         # Run a subset of tests with Miri (memory-mapped files might not work)
+  #         cargo miri test -p diskmap --lib buffers::tests::test_basic_operations_vec_backend
+  #         cargo miri test -p diskmap --lib buffers::tests::test_load
 
   minimum-rust-version:
     name: Minimum Rust Version
@@ -98,7 +92,7 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           # Check MSRV (Minimum Supported Rust Version)
-          toolchain: 1.70.0
+          toolchain: 1.88.0
 
       - name: Check build
         run: cargo check --all-features

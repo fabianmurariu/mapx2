@@ -10,7 +10,7 @@ This repository includes several GitHub Actions workflows to ensure code quality
 
 **Jobs:**
 
-- **Test**: Runs on Ubuntu, Windows, macOS with stable and beta Rust
+- **Test**: Runs on Ubuntu, Windows, macOS with stable Rust
   - Code formatting check (`cargo fmt --check`)
   - Clippy linting (`cargo clippy`)
   - Build verification
@@ -19,7 +19,7 @@ This repository includes several GitHub Actions workflows to ensure code quality
   - Benchmark compilation check
 
 - **Miri**: Memory safety testing with Rust's Miri interpreter
-- **MSRV**: Minimum Supported Rust Version testing (1.70.0)
+- **MSRV**: Minimum Supported Rust Version testing (1.88.0)
 - **Documentation**: Documentation build with warning checks
 - **Security Audit**: Dependency vulnerability scanning with `cargo-audit`
 - **Code Coverage**: Coverage analysis with `cargo-llvm-cov` and Codecov upload
@@ -104,7 +104,6 @@ For full functionality, add these secrets to your repository:
 ### Matrix Strategy
 
 - Parallel testing across multiple platforms
-- Reduced redundancy for beta testing on non-Ubuntu platforms
 
 ## Monitoring
 
@@ -153,7 +152,7 @@ cargo llvm-cov --all-features --workspace
 1. **Formatting failures**: Run `cargo fmt --all` locally
 2. **Clippy warnings**: Address warnings shown by `cargo clippy`
 3. **Test failures**: Ensure all tests pass with `cargo test --all-features`
-4. **MSRV failures**: Code may use features newer than Rust 1.70.0
+4. **MSRV failures**: Code may use features newer than Rust 1.88.0
 
 ### Performance
 
