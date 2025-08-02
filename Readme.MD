@@ -10,6 +10,8 @@
 
 High-performance, persistent hash maps for Rust with **zero-copy deserialization** support and **memory-mapped file backing**.
 
+There are no durability guarantees, but the data is stored in a memory-mapped file that persists across program runs. The OS will flush the data when it pleases!
+
 ## ✨ Features
 
 - 🚀 **High Performance**: Open addressing with linear probing for cache-friendly access
@@ -245,39 +247,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-## 🏗️ Architecture
-
-### Storage Layout
-
-MapX2 uses a three-file storage system for optimal performance:
-
-```
-my_map/
-├── entries_0.bin    # Hash table entries (metadata)
-├── keys.bin         # Variable-length key storage
-└── values.bin       # Variable-length value storage
-```
-
-### Memory Layout
-
-Each data entry in keys.bin and values.bin follows this 8-byte aligned format for zero-copy compatibility:
-
-```
-[8-byte length prefix][actual data][zero padding to 8-byte boundary]
-```
-
-This ensures that zero-copy frameworks like rkyv can directly access the data without additional alignment.
-
-### Hash Table Design
-
-- **Open addressing** with linear probing for cache efficiency
-- **Load factor**: Resizes at 40% to maintain performance
-- **Power-of-2 sizing**: Capacity is always a power of 2 for fast modulo operations
-- **Tombstone deletion**: Deleted entries are marked, not removed
-
 ## 🔧 Type System
-
-MapX2 uses a trait-based type system for flexible serialization:
 
 | Type Wrapper | Purpose                    | Example                      |
 | ------------ | -------------------------- | ---------------------------- |
@@ -293,88 +263,3 @@ MapX2 uses a trait-based type system for flexible serialization:
 ```bash
 cargo bench
 ```
-
-Typical performance characteristics:
-
-- **Insert**: ~500-800 ns per operation
-- **Lookup**: ~100-300 ns per operation
-- **Memory overhead**: ~8 bytes per entry + key/value sizes
-- **Load factor**: Maintains 40% for optimal performance
-
-### Memory Usage
-
-- Fixed overhead: ~24 bytes per hash table entry
-- Variable data: Exact key + value sizes + 8-byte length prefixes
-- Alignment padding: Up to 7 bytes per entry for zero-copy compatibility
-
-## 🛡️ Safety
-
-- **Memory safety**: Rust's ownership system prevents memory errors
-- **Crash safety**: Memory-mapped files provide durability
-- **Data integrity**: Checksums and validation prevent corruption
-- **Thread safety**: `DiskHashMap` is `Send` but not `Sync` (single-threaded)
-
-## 🧪 Testing
-
-Run the comprehensive test suite:
-
-```bash
-# Run all tests
-cargo test --all-features
-
-# Run with coverage
-cargo install cargo-llvm-cov
-cargo llvm-cov --all-features --workspace --html
-
-# Property-based testing
-PROPTEST_CASES=10000 cargo test
-
-# Memory safety testing
-cargo +nightly miri test
-```
-
-## 📚 Examples
-
-Explore more examples in the [`examples/`](./diskmap/examples/) directory:
-
-- [`with_capacity_demo.rs`](./diskmap/examples/with_capacity_demo.rs) - Custom capacity allocation
-- [`byte_store_demo.rs`](./diskmap/examples/byte_store_demo.rs) - Low-level storage operations
-
-## 🤝 Contributing
-
-We welcome contributions! Please see our [Contributing Guide](.github/CONTRIBUTING.md) for details.
-
-### Development Setup
-
-```bash
-git clone https://github.com/fabianmurariu/mapx2.git
-cd mapx2
-
-# Run tests
-cargo test --all-features
-
-# Check formatting and lints
-cargo fmt --all
-cargo clippy --all-targets --all-features
-
-# Run benchmarks
-cargo bench
-```
-
-## 📄 License
-
-Licensed under either of
-
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
-- MIT license ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
-
-at your option.
-
-## 🏷️ Version History
-
-- **v0.1.0**: Initial release with `DiskHashMap` and zero-copy support
-- **Future**: `ConcurrentDiskHashMap` with multi-threading support
-
----
-
-_MapX2 is designed for applications requiring high-performance, persistent key-value storage with zero-copy access patterns. Perfect for databases, caches, search engines, and any system where fast, durable data access is critical._
