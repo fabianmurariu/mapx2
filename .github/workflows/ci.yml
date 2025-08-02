@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [ master, main ]
+    branches: [master, main]
   pull_request:
-    branches: [ master, main ]
+    branches: [master, main]
 
 env:
   CARGO_TERM_COLOR: always
@@ -25,134 +25,126 @@ jobs:
             rust: beta
 
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Install Rust
-      uses: dtolnay/rust-toolchain@master
-      with:
-        toolchain: ${{ matrix.rust }}
-        components: rustfmt, clippy
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+          components: rustfmt, clippy
 
-    - name: Cache dependencies
-      uses: actions/cache@v4
-      with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          target
-        key: ${{ runner.os }}-cargo-${{ matrix.rust }}-${{ hashFiles('**/Cargo.lock') }}
-        restore-keys: |
-          ${{ runner.os }}-cargo-${{ matrix.rust }}-
-          ${{ runner.os }}-cargo-
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ matrix.rust }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-${{ matrix.rust }}-
+            ${{ runner.os }}-cargo-
 
-    - name: Check formatting
-      run: cargo fmt --all -- --check
+      - name: Check formatting
+        run: cargo fmt --all -- --check
 
-    - name: Run clippy
-      run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Run clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
 
-    - name: Build
-      run: cargo build --verbose --all-features
+      - name: Build
+        run: cargo build --verbose --all-features
 
-    - name: Run tests
-      run: cargo test --verbose --all-features
+      - name: Run tests
+        run: cargo test --verbose --all-features
 
-    - name: Run tests (diskmap)
-      run: cargo test -p diskmap --verbose
+      - name: Run tests (diskmap)
+        run: cargo test -p diskmap --verbose
 
-    - name: Run tests (concurrent_diskmap)
-      run: cargo test -p concurrent_diskmap --verbose
+      - name: Run tests (concurrent_diskmap)
+        run: cargo test -p concurrent_diskmap --verbose
 
-    - name: Build examples
-      run: cargo build --examples
+      - name: Build examples
+        run: cargo build --examples
 
-    - name: Run benchmarks (compile only)
-      run: cargo bench --no-run
+      - name: Run benchmarks (compile only)
+        run: cargo bench --no-run
 
   miri:
     name: Miri
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Install Rust
-      uses: dtolnay/rust-toolchain@master
-      with:
-        toolchain: nightly
-        components: miri
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly
+          components: miri
 
-    - name: Run Miri
-      run: |
-        cargo miri setup
-        # Run a subset of tests with Miri (memory-mapped files might not work)
-        cargo miri test -p diskmap --lib buffers::tests::test_basic_operations_vec_backend
-        cargo miri test -p diskmap --lib buffers::tests::test_load
+      - name: Run Miri
+        run: |
+          cargo miri setup
+          # Run a subset of tests with Miri (memory-mapped files might not work)
+          cargo miri test -p diskmap --lib buffers::tests::test_basic_operations_vec_backend
+          cargo miri test -p diskmap --lib buffers::tests::test_load
 
   minimum-rust-version:
     name: Minimum Rust Version
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Install Rust
-      uses: dtolnay/rust-toolchain@master
-      with:
-        # Check MSRV (Minimum Supported Rust Version)
-        toolchain: 1.70.0
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          # Check MSRV (Minimum Supported Rust Version)
+          toolchain: 1.70.0
 
-    - name: Check build
-      run: cargo check --all-features
+      - name: Check build
+        run: cargo check --all-features
 
   docs:
     name: Documentation
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
 
-    - name: Check documentation
-      run: cargo doc --all-features --no-deps --document-private-items
-      env:
-        RUSTDOCFLAGS: -D warnings
+      - name: Check documentation
+        run: cargo doc --all-features --no-deps --document-private-items
+        env:
+          RUSTDOCFLAGS: -D warnings
 
   security:
     name: Security Audit
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
 
-    - name: Install cargo-audit
-      run: cargo install cargo-audit
+      - name: Install cargo-audit
+        run: cargo install cargo-audit
 
-    - name: Run security audit
-      run: cargo audit
+      - name: Run security audit
+        run: cargo audit
 
   coverage:
     name: Code Coverage
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable
-      with:
-        components: llvm-tools-preview
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
 
-    - name: Install cargo-llvm-cov
-      uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
 
-    - name: Generate code coverage
-      run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
-
-    - name: Upload coverage to Codecov
-      uses: codecov/codecov-action@v4
-      with:
-        file: lcov.info
-        fail_ci_if_error: true
-        token: ${{ secrets.CODECOV_TOKEN }}
-        verbose: true
+      - name: Generate code coverage
+        run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
