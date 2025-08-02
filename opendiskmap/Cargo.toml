@@ -1,14 +1,27 @@
 [package]
 name = "opendiskmap"
-version = "0.1.0"
-edition = "2024"
-resolver = "3"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+description = "Single-threaded disk-backed hash map with memory-mapped file backing"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
 rkyv.workspace = true
 
 modular-bitfield.workspace = true
-bytemuck = { version = "1.16.0", features = ["derive"] }
+bytemuck = { workspace = true, features = ["derive"] }
 memmap2.workspace = true
 rustc-hash.workspace = true
 
