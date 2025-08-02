@@ -10,7 +10,7 @@ This repository includes several GitHub Actions workflows to ensure code quality
 
 **Jobs:**
 
-- **Test**: Runs on Ubuntu, Windows, macOS with stable and beta Rust
+- **Test**: Runs on Ubuntu, Windows, macOS with stable Rust
   - Code formatting check (`cargo fmt --check`)
   - Clippy linting (`cargo clippy`)
   - Build verification
@@ -104,7 +104,6 @@ For full functionality, add these secrets to your repository:
 ### Matrix Strategy
 
 - Parallel testing across multiple platforms
-- Reduced redundancy for beta testing on non-Ubuntu platforms
 
 ## Monitoring
 
