@@ -129,9 +129,9 @@ where
         self.load_factor() > 0.4
     }
 
-    fn hash_key(&self, key: &[u8]) -> u64 {
-        self.hasher.hash_one(key)
-    }
+    // fn hash_key(&self, key: &[u8]) -> u64 {
+    //     self.hasher.hash_one(key)
+    // }
 
     /// Find the slot index for a key
     /// if the key is found, returns Some(index),
@@ -146,7 +146,7 @@ where
             return Err(0);
         }
 
-        let hash = hash_fn(key); //self.hash_key(key);
+        let hash = hash_fn(key);
         let mut index = hash as usize % self.capacity;
 
         // Linear probing
@@ -160,9 +160,7 @@ where
             if !entry.is_deleted() {
                 // Check if this is our key
                 if let Some(stored_key) = self.keys.get(entry.key_pos()) {
-                    if
-                    /*  key == stored_key  */
-                    eq_fn(key, stored_key) {
+                    if eq_fn(key, stored_key) {
                         return Ok(index);
                     }
                 }
@@ -174,39 +172,7 @@ where
         Err(self.capacity)
     }
 
-    fn grow(&mut self) -> Result<(), Box<dyn std::error::Error + Sync + Send>> {
-        let new_capacity = if self.capacity == 0 {
-            16
-        } else {
-            self.capacity * 2
-        };
-        let mut new_entries = self.entries.new_empty(new_capacity);
 
-        // Re-hash all existing entries into the new larger array
-        for i in 0..self.capacity {
-            let entry = self.entries[i];
-            if entry.is_occupied() {
-                let key_data = self
-                    .keys
-                    .get(entry.key_pos())
-                    .expect("key must exist for occupied entry");
-                let hash = self.hash_key(key_data);
-                let mut index = hash as usize % new_capacity;
-
-                // Linear probing in the new_entries array
-                loop {
-                    if new_entries[index].is_empty() {
-                        new_entries[index] = entry;
-                        break;
-                    }
-                    index = (index + 1) % new_capacity;
-                }
-            }
-        }
-        self.entries = new_entries;
-        self.capacity = new_capacity;
-        Ok(())
-    }
 
     pub fn stats(&self) -> (u64, u64, u64) {
         (
@@ -217,17 +183,51 @@ where
     }
 }
 
-impl<K, V, BS: ByteStore, S: BuildHasher + Default> HashMap<K, V, BS, S> {
+impl<K: for<'a> BytesEncode<'a>, V: for<'a> BytesEncode<'a> + for<'a> BytesDecode<'a>, BS: ByteStore, S: BuildHasher + Default> HashMap<K, V, BS, S>
+{
+
+    fn grow(&mut self) -> Result<(), Box<dyn std::error::Error + Sync + Send>>
+    {
+        let new_capacity = if self.capacity == 0 {
+            16
+        } else {
+            self.capacity * 2
+        };
+        let mut new_entries = self.entries.new_empty(new_capacity);
+        let actual_new_capacity = new_entries.capacity();
+
+        // Re-hash all existing entries into the new larger array
+        for i in 0..self.capacity {
+            let entry = self.entries[i];
+            if entry.is_occupied() {
+                let key_data = self
+                    .keys
+                    .get(entry.key_pos())
+                    .expect("key must exist for occupied entry");
+                let hash = <K as BytesEncode>::hash_alt(key_data, &self.hasher);
+                let mut index = hash as usize % actual_new_capacity;
+
+                // Linear probing in the new_entries array
+                loop {
+                    if new_entries[index].is_empty() {
+                        new_entries[index] = entry;
+                        break;
+                    }
+                    index = (index + 1) % actual_new_capacity;
+                }
+            }
+        }
+        self.entries = new_entries;
+        self.capacity = actual_new_capacity;
+        Ok(())
+    }
+
     /// Insert a key-value pair into the map using the trait-based API
     pub fn insert<'a>(
-        &mut self,
-        key: &'a K::EItem,
-        value: &'a V::EItem,
-    ) -> Result<Option<<V as BytesDecode<'_>>::DItem>, Box<dyn std::error::Error + Sync + Send>>
-    where
-        K: BytesEncode<'a>,
-        V: BytesEncode<'a>,
-        for<'b> V: BytesDecode<'b>,
+        &'a mut self,
+        key: &'a <K as BytesEncode<'a>>::EItem,
+        value: &'a <V as BytesEncode<'a>>::EItem,
+    ) -> Result<Option<<V as BytesDecode<'a>>::DItem>, Box<dyn std::error::Error + Sync + Send>>
     {
         if self.should_resize() {
             self.grow()?;
@@ -267,24 +267,19 @@ impl<K, V, BS: ByteStore, S: BuildHasher + Default> HashMap<K, V, BS, S> {
     }
 
     fn find_slot_inner<'a>(&self, key: &[u8]) -> Result<usize, usize>
-    where
-        K: BytesEncode<'a>,
     {
         self.find_slot(
             key,
             |l, r| <K as BytesEncode>::eq_alt(l, r),
-            |k| K::hash_alt(k, &self.hasher),
+            |k| <K as BytesEncode>::hash_alt(k, &self.hasher), // Use the same hash function as grow()
         )
     }
 
     /// Get a value by key using the trait-based API
     pub fn get<'a>(
         &self,
-        key: &'a K::EItem,
+        key: &'a <K as BytesEncode<'a>>::EItem,
     ) -> Result<Option<<V as BytesDecode<'_>>::DItem>, Box<dyn std::error::Error + Sync + Send>>
-    where
-        K: BytesEncode<'a>,
-        for<'b> V: BytesDecode<'b>,
     {
         if self.is_empty() {
             return Ok(None);
@@ -913,7 +908,7 @@ mod tests {
         // Verify all values are still accessible
         for i in 0u8..20 {
             let result = map.get(&i);
-            assert!(result.is_ok());
+            assert!(result.is_ok(), "Failed to get key {}", i);
             assert_eq!(result.unwrap(), Some(i * 2));
         }
     }
