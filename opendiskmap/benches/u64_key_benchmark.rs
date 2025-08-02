@@ -1,13 +1,13 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use diskmap::disk_map::DiskHashMap;
-use diskmap::types::{Bytes, Native};
+use opendiskmap::disk_map::DiskHashMap;
+use opendiskmap::types::{Bytes, Native};
 use rand::{Rng, RngCore};
 use rustc_hash::FxBuildHasher;
 use std::time::Duration;
 use tempfile::tempdir;
 
 // Type alias for our Mmap-backed HashMap with u64 keys and Vec<u8> values
-type HashMapMmapU64 = DiskHashMap<Native<u64>, Bytes, diskmap::byte_store::MMapFile, FxBuildHasher>;
+type HashMapMmapU64 = DiskHashMap<Native<u64>, Bytes, opendiskmap::byte_store::MMapFile, FxBuildHasher>;
 
 /// Generates a vector of key-value pairs for benchmarking.
 /// Keys are random u64 values, and values are random byte vectors.

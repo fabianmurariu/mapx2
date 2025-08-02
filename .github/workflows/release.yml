@@ -36,8 +36,8 @@ jobs:
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
 
-    - name: Publish diskmap
-      run: cargo publish -p diskmap --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+    - name: Publish opendiskmap
+      run: cargo publish -p opendiskmap --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
     - name: Publish concurrent_diskmap
       run: cargo publish -p concurrent_diskmap --token ${{ secrets.CARGO_REGISTRY_TOKEN }}

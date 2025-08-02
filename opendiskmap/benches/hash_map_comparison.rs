@@ -1,6 +1,6 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use diskmap::disk_map::DiskHashMap;
-use diskmap::{Bytes, byte_store::MMapFile};
+use opendiskmap::disk_map::DiskHashMap;
+use opendiskmap::{Bytes, byte_store::MMapFile};
 use rand::{Rng, distr::Alphanumeric};
 use rustc_hash::FxBuildHasher;
 use tempfile::tempdir;

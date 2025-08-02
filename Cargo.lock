@@ -262,23 +262,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 
 [[package]]
-name = "diskmap"
-version = "0.1.0"
-dependencies = [
- "bytemuck",
- "criterion",
- "memmap2",
- "modular-bitfield",
- "paste",
- "proptest",
- "rand",
- "rkyv",
- "rustc-hash",
- "sled",
- "tempfile",
-]
-
-[[package]]
 name = "either"
 version = "1.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -530,6 +513,23 @@ name = "oorandom"
 version = "11.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6790f58c7ff633d8771f42965289203411a5e5c68388703c06e14f24770b41e"
+
+[[package]]
+name = "opendiskmap"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "criterion",
+ "memmap2",
+ "modular-bitfield",
+ "paste",
+ "proptest",
+ "rand",
+ "rkyv",
+ "rustc-hash",
+ "sled",
+ "tempfile",
+]
 
 [[package]]
 name = "parking_lot"
