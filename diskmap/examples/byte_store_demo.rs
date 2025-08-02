@@ -175,7 +175,7 @@ fn demo_kv_store() {
     }
 
     let (entries, free) = kv.stats();
-    println!("   KV Store: {} entries, {} bytes free", entries, free);
+    println!("   KV Store: {entries} entries, {free} bytes free");
 
     // Retrieve and verify
     for (key, expected_value) in &data {
@@ -188,7 +188,7 @@ fn demo_kv_store() {
                     std::str::from_utf8(value).unwrap_or("<binary>")
                 );
             }
-            None => println!("   Key '{}' not found", key),
+            None => println!("   Key '{key}' not found"),
         }
     }
 

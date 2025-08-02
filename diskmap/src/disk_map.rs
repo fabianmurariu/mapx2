@@ -6,16 +6,16 @@ use std::path::Path;
 use rustc_hash::FxBuildHasher;
 
 use crate::byte_store::{MMapFile, VecStore};
+use crate::entry::Entry;
 use crate::fixed_buffers::FixedVec;
-use crate::raw_map::entry::Entry;
-use crate::raw_map::storage::MapStorage;
+use crate::storage::MapStorage;
 use crate::types::{BytesDecode, BytesEncode, Native, Str};
 use crate::{Buffers, ByteStore};
 
 // Type aliases for common use cases
-pub type U64StringMap<BS = VecStore> = HashMap<Native<u64>, Str, BS>;
-pub type StringU64Map<BS = VecStore> = HashMap<Str, Native<u64>, BS>;
-pub type StringStringMap<BS = VecStore> = HashMap<Str, Str, BS>;
+pub type U64StringMap<BS = VecStore> = DiskHashMap<Native<u64>, Str, BS>;
+pub type StringU64Map<BS = VecStore> = DiskHashMap<Str, Native<u64>, BS>;
+pub type StringStringMap<BS = VecStore> = DiskHashMap<Str, Str, BS>;
 
 /// Entry API for the HashMap, similar to std::collections::HashMap
 pub enum MapEntry<'a, K, V, BS, S = FxBuildHasher>
@@ -60,7 +60,7 @@ where
     BS: ByteStore,
     S: BuildHasher + Default,
 {
-    map: &'a mut HashMap<K, V, BS, S>,
+    map: &'a mut DiskHashMap<K, V, BS, S>,
     slot_idx: usize,
 }
 
@@ -70,7 +70,7 @@ where
     BS: ByteStore,
     S: BuildHasher + Default,
 {
-    map: &'a mut HashMap<K, V, BS, S>,
+    map: &'a mut DiskHashMap<K, V, BS, S>,
     key: Vec<u8>,
     slot_idx: usize,
 }
@@ -81,7 +81,7 @@ where
 /// allowing for flexible storage options (in-memory with VecStore or persistent with MMapFile).
 /// The `ByteStore` is not used directly; instead we rely on `Buffers`
 /// which is technically a `Vec<Box<[u8]>>` but backed by a `ByteStore` trait.
-pub struct HashMap<K, V, BS, S = FxBuildHasher>
+pub struct DiskHashMap<K, V, BS, S = FxBuildHasher>
 where
     BS: ByteStore,
     S: BuildHasher + Default,
@@ -95,13 +95,13 @@ where
     _marker: PhantomData<(K, V)>,
 }
 
-impl<K, V> Default for HashMap<K, V, VecStore, FxBuildHasher> {
+impl<K, V> Default for DiskHashMap<K, V, VecStore, FxBuildHasher> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<K, V, BS, S> HashMap<K, V, BS, S>
+impl<K, V, BS, S> DiskHashMap<K, V, BS, S>
 where
     BS: ByteStore,
     S: BuildHasher + Default,
@@ -224,7 +224,7 @@ impl<
     V: for<'a> BytesEncode<'a> + for<'a> BytesDecode<'a>,
     BS: ByteStore,
     S: BuildHasher + Default,
-> HashMap<K, V, BS, S>
+> DiskHashMap<K, V, BS, S>
 {
     fn grow(&mut self) -> Result<(), Box<dyn std::error::Error + Sync + Send>> {
         let new_capacity = if self.capacity == 0 {
@@ -391,14 +391,14 @@ impl<
     }
 }
 
-impl<K, V> HashMap<K, V, VecStore, FxBuildHasher> {
+impl<K, V> DiskHashMap<K, V, VecStore, FxBuildHasher> {
     /// Creates a new in-memory HashMap
     pub fn new() -> Self {
         Self::with_stores(VecStore::new(), VecStore::new(), VecStore::new())
     }
 }
 
-impl<K, V, S> HashMap<K, V, MMapFile, S>
+impl<K, V, S> DiskHashMap<K, V, MMapFile, S>
 where
     S: BuildHasher + Default,
 {
@@ -411,6 +411,51 @@ where
             DEFAULT_ENTRIES_CAP * std::mem::size_of::<Entry>(),
             DEFAULT_KV_CAP,
             DEFAULT_KV_CAP,
+        )?;
+
+        let keys = Buffers::new(storage.keys);
+        let values = Buffers::new(storage.values);
+        let entries = FixedVec::<Entry, _>::new(storage.entries);
+        let capacity = entries.capacity();
+
+        Ok(Self {
+            keys,
+            values,
+            entries,
+            capacity,
+            size: 0,
+            hasher: S::default(),
+            _marker: PhantomData,
+        })
+    }
+
+    /// Creates a new HashMap with specified capacities, rounding up to nearest power of 2
+    pub fn with_capacity(
+        path: impl AsRef<Path>,
+        num_entries: usize,
+        keys_bytes: usize,
+        values_bytes: usize,
+    ) -> io::Result<Self> {
+        let path = path.as_ref();
+
+        // Ensure none of the capacities are zero
+        if num_entries == 0 || keys_bytes == 0 || values_bytes == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Capacities must be greater than zero",
+            ));
+        }
+
+        // Round up to nearest power of 2
+        let entries_cap = num_entries.next_power_of_two();
+        let keys_cap = keys_bytes.next_power_of_two();
+        let values_cap = values_bytes.next_power_of_two();
+
+        let storage = MapStorage::new_in(
+            path,
+            entries_cap * std::mem::size_of::<Entry>(),
+            keys_cap,
+            values_cap,
         )?;
 
         let keys = Buffers::new(storage.keys);
@@ -603,12 +648,12 @@ mod tests {
     use std::collections::HashMap as StdHashMap;
     use tempfile::tempdir;
 
-    type BytesHM = HashMap<Bytes, Bytes, VecStore, FxBuildHasher>;
+    type BytesHM = DiskHashMap<Bytes, Bytes, VecStore, FxBuildHasher>;
 
     // Legacy tests using raw byte API for backward compatibility
     #[test]
     fn test_insert_and_get_raw() {
-        let mut map: BytesHM = HashMap::new();
+        let mut map: BytesHM = DiskHashMap::new();
 
         // Insert a key-value pair using raw API
         map.insert(b"hello", b"world").unwrap();
@@ -624,7 +669,7 @@ mod tests {
 
     #[test]
     fn test_update_value_raw() {
-        let mut map: BytesHM = HashMap::new();
+        let mut map: BytesHM = DiskHashMap::new();
 
         // Insert a key-value pair
         map.insert(b"key", b"value1").unwrap();
@@ -642,7 +687,7 @@ mod tests {
 
     #[test]
     fn test_multiple_entries_raw() {
-        let mut map: BytesHM = HashMap::new();
+        let mut map: BytesHM = DiskHashMap::new();
 
         // Insert multiple key-value pairs
         map.insert(b"key1", b"value1").unwrap();
@@ -657,7 +702,7 @@ mod tests {
 
     #[test]
     fn test_empty_map() {
-        let map: BytesHM = HashMap::new();
+        let map: BytesHM = DiskHashMap::new();
 
         // Map should be empty
         assert_eq!(map.len(), 0);
@@ -668,7 +713,7 @@ mod tests {
     }
 
     fn check_prop(hm: StdHashMap<Vec<u8>, Vec<u8>>) {
-        let mut map: BytesHM = HashMap::new();
+        let mut map: BytesHM = DiskHashMap::new();
 
         // Insert all key-value pairs from the StdHashMap
         let mut already_inserted = vec![];
@@ -704,7 +749,8 @@ mod tests {
     }
 
     fn check_prop_native(hm: StdHashMap<u64, u64>) {
-        let mut map: HashMap<Native<u64>, Native<u64>, VecStore, FxBuildHasher> = HashMap::new();
+        let mut map: DiskHashMap<Native<u64>, Native<u64>, VecStore, FxBuildHasher> =
+            DiskHashMap::new();
 
         // Insert all key-value pairs from the StdHashMap
         let mut already_inserted = vec![];
@@ -852,7 +898,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path();
 
-        type FileMap = HashMap<Bytes, Bytes, MMapFile, FxBuildHasher>;
+        type FileMap = DiskHashMap<Bytes, Bytes, MMapFile, FxBuildHasher>;
 
         // 1. Create a new map and add some data
         {
@@ -905,8 +951,8 @@ mod tests {
         assert_eq!(key_store.stats(), 1);
         assert_eq!(value_store.stats(), 1);
 
-        let mut map: HashMap<Bytes, Bytes, _, FxBuildHasher> =
-            HashMap::with_stores(entry_store, key_store, value_store);
+        let mut map: DiskHashMap<Bytes, Bytes, _, FxBuildHasher> =
+            DiskHashMap::with_stores(entry_store, key_store, value_store);
 
         let initial_stats = map.stats();
         assert_eq!(initial_stats, (1, 1, 1));
@@ -947,7 +993,7 @@ mod tests {
 
     #[test]
     fn test_entry_api_vacant() {
-        let mut map: BytesHM = HashMap::new();
+        let mut map: BytesHM = DiskHashMap::new();
 
         // Test vacant entry insertion
         match map.entry_raw(b"key1") {
@@ -964,7 +1010,7 @@ mod tests {
 
     #[test]
     fn test_entry_api_occupied() {
-        let mut map: BytesHM = HashMap::new();
+        let mut map: BytesHM = DiskHashMap::new();
 
         // Insert initial value
         map.insert(b"key1", b"value1").unwrap();
@@ -985,7 +1031,7 @@ mod tests {
 
     #[test]
     fn test_entry_api_or_insert() {
-        let mut map: BytesHM = HashMap::new();
+        let mut map: BytesHM = DiskHashMap::new();
 
         // Test or_insert with vacant entry
         match map.entry(b"key1").unwrap() {
@@ -1003,7 +1049,7 @@ mod tests {
 
     #[test]
     fn test_entry_api_or_insert_with() {
-        let mut map: BytesHM = HashMap::new();
+        let mut map: BytesHM = DiskHashMap::new();
 
         // Test or_insert_with with vacant entry
         match map.entry(b"key1").unwrap() {
@@ -1020,7 +1066,7 @@ mod tests {
 
     #[test]
     fn test_insert_returns_previous_value() {
-        let mut map: BytesHM = HashMap::new();
+        let mut map: BytesHM = DiskHashMap::new();
 
         // First insert should return None
         let previous = map.insert(b"key1", b"value1").unwrap();
@@ -1038,7 +1084,7 @@ mod tests {
     // New trait-based API tests
     #[test]
     fn test_native_u64_str_string() {
-        let mut map: HashMap<Native<u64>, Str, VecStore> = HashMap::new();
+        let mut map: DiskHashMap<Native<u64>, Str, VecStore> = DiskHashMap::new();
 
         // Insert a key-value pair
         let result = map.insert(&42, "hello");
@@ -1065,7 +1111,7 @@ mod tests {
 
     #[test]
     fn test_str_string_native_u32() {
-        let mut map: HashMap<Str, Native<u32>, VecStore> = HashMap::new();
+        let mut map: DiskHashMap<Str, Native<u32>, VecStore> = DiskHashMap::new();
 
         // Insert multiple pairs
         let key1 = "key1".to_string();
@@ -1093,7 +1139,7 @@ mod tests {
 
     #[test]
     fn test_capacity_and_growth() {
-        let mut map: HashMap<Native<u8>, Native<u8>, VecStore> = HashMap::new();
+        let mut map: DiskHashMap<Native<u8>, Native<u8>, VecStore> = DiskHashMap::new();
 
         // Insert enough items to trigger growth
         for i in 0u8..20 {
@@ -1115,7 +1161,7 @@ mod tests {
     #[test]
     fn test_convenience_methods() {
         // Test U64StringMap
-        let mut map: HashMap<Native<u64>, Str, VecStore> = U64StringMap::new();
+        let mut map: DiskHashMap<Native<u64>, Str, VecStore> = U64StringMap::new();
 
         let result = map.insert(&42, "hello");
         assert!(result.is_ok());
@@ -1231,8 +1277,8 @@ mod tests {
     fn archived_map() {
         let tempdir = tempfile::tempdir().expect("Failed to create temp dir");
 
-        let mut map: HashMap<Native<u64>, Arch<UserProfile>, MMapFile, FxBuildHasher> =
-            HashMap::new_in(tempdir.path()).unwrap();
+        let mut map: DiskHashMap<Native<u64>, Arch<UserProfile>, MMapFile, FxBuildHasher> =
+            DiskHashMap::new_in(tempdir.path()).unwrap();
 
         let user = UserProfile::new(1, "Integration Test");
 
@@ -1246,5 +1292,68 @@ mod tests {
 
         assert_eq!(user.id, 1);
         assert_eq!(user.name, "Integration Test");
+    }
+
+    #[test]
+    fn test_with_capacity() {
+        let tempdir = tempfile::tempdir().expect("Failed to create temp dir");
+
+        // Test with valid capacities
+        let map_result: Result<DiskHashMap<Bytes, Bytes, MMapFile, FxBuildHasher>, _> =
+            DiskHashMap::with_capacity(tempdir.path(), 8, 512, 1024);
+        assert!(map_result.is_ok());
+
+        let map = map_result.unwrap();
+        // Capacity should be rounded up to power of 2: 8 -> 8 (already power of 2)
+        assert_eq!(map.capacity(), 8);
+
+        // Test that we can actually use the map
+        drop(map);
+        let mut map: DiskHashMap<Bytes, Bytes, MMapFile, FxBuildHasher> =
+            DiskHashMap::load_from(tempdir.path()).unwrap();
+
+        map.insert(b"test_key", b"test_value").unwrap();
+        assert_eq!(map.get(b"test_key").unwrap(), Some(b"test_value".as_ref()));
+    }
+
+    #[test]
+    fn test_with_capacity_rounds_up_to_power_of_2() {
+        let tempdir = tempfile::tempdir().expect("Failed to create temp dir");
+
+        // Test with non-power-of-2 capacities
+        let map: DiskHashMap<Bytes, Bytes, MMapFile, FxBuildHasher> =
+            DiskHashMap::with_capacity(tempdir.path(), 15, 300, 700).unwrap();
+
+        // 15 -> 16 (next power of 2)
+        assert_eq!(map.capacity(), 16);
+    }
+
+    #[test]
+    fn test_with_capacity_zero_values_error() {
+        let tempdir = tempfile::tempdir().expect("Failed to create temp dir");
+
+        // Test zero num_entries
+        let result: Result<DiskHashMap<Bytes, Bytes, MMapFile, FxBuildHasher>, _> =
+            DiskHashMap::with_capacity(tempdir.path().join("zero_entries"), 0, 512, 1024);
+        assert!(result.is_err());
+        if let Err(err) = result {
+            assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        }
+
+        // Test zero keys_bytes
+        let result: Result<DiskHashMap<Bytes, Bytes, MMapFile, FxBuildHasher>, _> =
+            DiskHashMap::with_capacity(tempdir.path().join("zero_keys"), 8, 0, 1024);
+        assert!(result.is_err());
+        if let Err(err) = result {
+            assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        }
+
+        // Test zero values_bytes
+        let result: Result<DiskHashMap<Bytes, Bytes, MMapFile, FxBuildHasher>, _> =
+            DiskHashMap::with_capacity(tempdir.path().join("zero_values"), 8, 512, 0);
+        assert!(result.is_err());
+        if let Err(err) = result {
+            assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        }
     }
 }

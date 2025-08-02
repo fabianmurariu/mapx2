@@ -1,10 +1,13 @@
 mod buffers;
 pub mod byte_store;
 pub mod disk_map;
+mod entry;
 mod fixed_buffers;
-mod raw_map;
+mod storage;
 pub mod types;
 pub use buffers::Buffers;
 pub use byte_store::{ByteStore, MMapFile, VecStore};
-pub use disk_map::{HashMap, MapEntry, OccupiedEntry, VacantEntry, U64StringMap, StringU64Map, StringStringMap};
-pub use types::{BytesEncode, BytesDecode, Native, Str, Bytes};
+pub use disk_map::{
+    DiskHashMap, MapEntry, OccupiedEntry, StringStringMap, StringU64Map, U64StringMap, VacantEntry,
+};
+pub use types::{Bytes, BytesDecode, BytesEncode, Native, Str};
