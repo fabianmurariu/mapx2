@@ -1,0 +1,79 @@
+name: Nightly
+
+on:
+  schedule:
+    # Run nightly at 2 AM UTC
+    - cron: "0 2 * * *"
+  workflow_dispatch: # Allow manual triggering
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  nightly:
+    name: Nightly Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust Nightly
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-nightly-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run tests with nightly
+        run: cargo test --all-features
+
+      - name: Run benchmarks
+        run: cargo bench
+
+      - name: Check with unstable features
+        run: |
+          # Add any nightly-specific feature flags here if needed
+          cargo check --all-features
+
+  fuzzing:
+    name: Fuzzing
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust Nightly
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz
+
+      - name: Run property-based tests with extended iterations
+        run: |
+          # Run proptest with more iterations
+          PROPTEST_CASES=10000 cargo test --release
+
+  memory-usage:
+    name: Memory Usage Analysis
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install valgrind
+        run: sudo apt-get update && sudo apt-get install -y valgrind
+
+      - name: Install cargo-valgrind
+        run: cargo install cargo-valgrind
+
+      - name: Memory leak check
+        run: |
+          # Run a subset of tests under valgrind
+          cargo valgrind test -p diskmap buffers::tests::test_basic_operations_vec_backend

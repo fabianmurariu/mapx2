@@ -213,14 +213,14 @@ impl<T: ByteStore> Buffers<T> {
     pub fn append(&mut self, bytes: impl AsRef<[u8]>) -> usize {
         let bytes = bytes.as_ref();
         let offset_size = size_of::<usize>();
-        
+
         // Calculate total space needed: length prefix (8 bytes) + data + padding to 8-byte boundary
         let actual_len = bytes.len();
         let len_prefix_size = size_of::<u64>();
         let data_with_prefix_len = len_prefix_size + actual_len;
         let padded_len = (data_with_prefix_len + 7) & !7; // Round up to next multiple of 8
         let total_data_size = padded_len;
-        
+
         let needed_space = offset_size + total_data_size;
 
         if self.free_space() < needed_space {
@@ -251,17 +251,16 @@ impl<T: ByteStore> Buffers<T> {
         // Write the data: length prefix + actual data + padding
         self.data_end -= total_data_size;
         let data_write_start = self.data_end;
-        
+
         // Write length prefix as u64
         let len_bytes = (actual_len as u64).to_le_bytes();
         self.bs_mut()[data_write_start..data_write_start + len_prefix_size]
             .copy_from_slice(&len_bytes);
-        
+
         // Write actual data
         let data_start = data_write_start + len_prefix_size;
-        self.bs_mut()[data_start..data_start + actual_len]
-            .copy_from_slice(bytes);
-        
+        self.bs_mut()[data_start..data_start + actual_len].copy_from_slice(bytes);
+
         // Zero out padding bytes
         let padding_start = data_start + actual_len;
         let padding_end = data_write_start + total_data_size;
@@ -317,29 +316,32 @@ impl<T: ByteStore> Buffers<T> {
         let total_len = self.bs().len();
         let entry_start = total_len - end_cumulative;
         let entry_end = total_len - start_cumulative;
-        
+
         let entry_data = &self.bs()[entry_start..entry_end];
-        
+
         // Read the length prefix (first 8 bytes as u64)
         if entry_data.len() < size_of::<u64>() {
             panic!("Entry data too small to contain length prefix for index {index}");
         }
-        
+
         let len_prefix_size = size_of::<u64>();
         let len_bytes: [u8; 8] = entry_data[0..len_prefix_size].try_into().unwrap();
         let actual_len = u64::from_le_bytes(len_bytes) as usize;
-        
+
         // Return only the actual data (skip the length prefix)
         let data_start = len_prefix_size;
         let data_end = data_start + actual_len;
-        
+
         if data_end > entry_data.len() {
-            panic!("Actual length {actual_len} exceeds entry size {} for index {index}", entry_data.len() - len_prefix_size);
+            panic!(
+                "Actual length {actual_len} exceeds entry size {} for index {index}",
+                entry_data.len() - len_prefix_size
+            );
         }
-        
+
         Some(&entry_data[data_start..data_end])
     }
-    
+
     /// Get the raw aligned data by its index (includes length prefix and padding)
     /// This is useful for zero-copy deserialization where alignment matters
     pub fn get_aligned_raw(&self, index: usize) -> Option<&[u8]> {
@@ -360,10 +362,10 @@ impl<T: ByteStore> Buffers<T> {
         let total_len = self.bs().len();
         let entry_start = total_len - end_cumulative;
         let entry_end = total_len - start_cumulative;
-        
+
         Some(&self.bs()[entry_start..entry_end])
     }
-    
+
     /// Get the data portion (without length prefix) starting at the aligned offset
     /// This returns the data + padding, which maintains 8-byte alignment for zero-copy
     pub fn get_aligned_data(&self, index: usize) -> Option<&[u8]> {
@@ -384,15 +386,15 @@ impl<T: ByteStore> Buffers<T> {
         let total_len = self.bs().len();
         let entry_start = total_len - end_cumulative;
         let entry_end = total_len - start_cumulative;
-        
+
         let entry_data = &self.bs()[entry_start..entry_end];
-        
+
         // Skip the length prefix and return the aligned data portion
         let len_prefix_size = size_of::<u64>();
         if entry_data.len() < len_prefix_size {
             panic!("Entry data too small to contain length prefix for index {index}");
         }
-        
+
         Some(&entry_data[len_prefix_size..])
     }
 
