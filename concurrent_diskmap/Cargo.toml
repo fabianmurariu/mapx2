@@ -18,3 +18,10 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
+opendiskmap = { path = "../opendiskmap" }
+parking_lot.workspace = true
+rustc-hash.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+proptest.workspace = true
