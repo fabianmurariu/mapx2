@@ -21,7 +21,7 @@ pub type StringStringMap<BS = VecStore> = DiskHashMap<Str, Str, BS>;
 pub enum MapEntry<'a, K, V, BS, S = FxBuildHasher>
 where
     BS: ByteStore,
-    S: BuildHasher + Default,
+    S: BuildHasher,
 {
     Occupied(OccupiedEntry<'a, K, V, BS, S>),
     Vacant(VacantEntry<'a, K, V, BS, S>),
@@ -58,7 +58,7 @@ where
 pub struct OccupiedEntry<'a, K, V, BS, S = FxBuildHasher>
 where
     BS: ByteStore,
-    S: BuildHasher + Default,
+    S: BuildHasher,
 {
     map: &'a mut DiskHashMap<K, V, BS, S>,
     slot_idx: usize,
@@ -68,7 +68,7 @@ where
 pub struct VacantEntry<'a, K, V, BS, S = FxBuildHasher>
 where
     BS: ByteStore,
-    S: BuildHasher + Default,
+    S: BuildHasher,
 {
     map: &'a mut DiskHashMap<K, V, BS, S>,
     key: Vec<u8>,
@@ -84,7 +84,7 @@ where
 pub struct DiskHashMap<K, V, BS, S = FxBuildHasher>
 where
     BS: ByteStore,
-    S: BuildHasher + Default,
+    S: BuildHasher,
 {
     entries: FixedVec<Entry, BS>,
     keys: Buffers<BS>,
@@ -123,7 +123,13 @@ where
             _marker: PhantomData,
         }
     }
+}
 
+impl<K, V, BS, S> DiskHashMap<K, V, BS, S>
+where
+    BS: ByteStore,
+    S: BuildHasher,
+{
     /// Returns the number of key-value pairs in the map
     pub fn len(&self) -> usize {
         self.size
@@ -220,10 +226,10 @@ where
 }
 
 impl<
-    K: for<'a> BytesEncode<'a>,
+    K: for<'a> BytesEncode<'a> + for<'a> BytesDecode<'a>,
     V: for<'a> BytesEncode<'a> + for<'a> BytesDecode<'a>,
     BS: ByteStore,
-    S: BuildHasher + Default,
+    S: BuildHasher,
 > DiskHashMap<K, V, BS, S>
 {
     fn grow(&mut self) -> Result<(), Box<dyn std::error::Error + Sync + Send>> {
@@ -320,7 +326,7 @@ impl<
         Ok(Some(old_value))
     }
 
-    fn find_slot_inner(&self, key: &[u8]) -> Result<usize, usize> {
+    pub fn find_slot_inner(&self, key: &[u8]) -> Result<usize, usize> {
         self.find_slot(
             key,
             |l, r| <K as BytesEncode>::eq_alt(l, r),
@@ -334,6 +340,45 @@ impl<
         key: &'a <K as BytesEncode<'a>>::EItem,
     ) -> Result<Option<<V as BytesDecode<'_>>::DItem>, Box<dyn std::error::Error + Sync + Send>>
     {
+        self.find_entry(key)?.map_or(Ok(None), |entry| {
+            let value_bytes = self
+                .values
+                .get(entry.value_pos())
+                .expect("value must exist for occupied entry");
+            V::bytes_decode(value_bytes).map(Some)
+        })
+    }
+
+    pub fn get_key(
+        &self,
+        e: &Entry,
+    ) -> Result<<K as BytesDecode<'_>>::DItem, Box<dyn std::error::Error + Sync + Send>> {
+        let key_bytes = self
+            .keys
+            .get(e.key_pos())
+            .expect("key must exist for occupied entry");
+        let key = K::bytes_decode(key_bytes)?;
+
+        Ok(key)
+    }
+
+    pub fn get_value(
+        &self,
+        e: &Entry,
+    ) -> Result<<V as BytesDecode<'_>>::DItem, Box<dyn std::error::Error + Sync + Send>> {
+        let value_bytes = self
+            .values
+            .get(e.value_pos())
+            .expect("value must exist for occupied entry");
+        let value = V::bytes_decode(value_bytes)?;
+
+        Ok(value)
+    }
+
+    pub fn find_entry<'a>(
+        &self,
+        key: &'a <K as BytesEncode<'a>>::EItem,
+    ) -> Result<Option<Entry>, Box<dyn std::error::Error + Sync + Send>> {
         if self.is_empty() {
             return Ok(None);
         }
@@ -342,12 +387,11 @@ impl<
         match self.find_slot_inner(&key_bytes) {
             Ok(slot_idx) => {
                 let entry = &self.entries[slot_idx];
-                let value_bytes = self
-                    .values
-                    .get(entry.value_pos())
-                    .expect("value must exist for occupied entry");
-                let value = V::bytes_decode(value_bytes)?;
-                Ok(Some(value))
+                if entry.is_occupied() {
+                    Ok(Some(*entry))
+                } else {
+                    Ok(None)
+                }
             }
             Err(_) => Ok(None),
         }
@@ -530,7 +574,7 @@ impl<'a, K, V, BS, S> OccupiedEntry<'a, K, V, BS, S>
 where
     BS: ByteStore,
     S: BuildHasher + Default,
-    K: for<'b> BytesEncode<'b>,
+    K: for<'b> BytesEncode<'b> + for<'b> BytesDecode<'b>,
     V: for<'b> BytesEncode<'b> + for<'b> BytesDecode<'b>,
 {
     /// Get the value in the entry using the trait-based API

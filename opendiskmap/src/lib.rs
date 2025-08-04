@@ -1,7 +1,7 @@
 mod buffers;
 pub mod byte_store;
 pub mod disk_map;
-mod entry;
+pub mod entry;
 mod fixed_buffers;
 mod storage;
 pub mod types;

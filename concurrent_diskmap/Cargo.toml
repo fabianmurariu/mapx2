@@ -21,6 +21,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 opendiskmap = { path = "../opendiskmap" }
 parking_lot.workspace = true
 rustc-hash.workspace = true
+crossbeam-utils.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
