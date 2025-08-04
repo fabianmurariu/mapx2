@@ -251,25 +251,25 @@ mod tests {
             DiskDashMap::new_in(temp_dir.path()).unwrap();
 
         // Test insert and get
-        let key1 = "key1".to_string();
-        let value1 = "value1".to_string();
-        map.insert(&key1, &value1)?;
-        assert_eq!(map.get(&key1)?.unwrap().value()?, "value1");
+        let key1 = "key1";
+        let value1 = "value1";
+        map.insert(key1, value1)?;
+        assert_eq!(map.get(key1)?.unwrap().value()?, "value1");
 
         // Test contains_key
-        assert!(map.contains_key(&key1)?);
-        let key2 = "key2".to_string();
-        assert!(!map.contains_key(&key2)?);
+        assert!(map.contains_key(key1)?);
+        let key2 = "key2";
+        assert!(!map.contains_key(key2)?);
 
         // Test update
-        let value2 = "value2".to_string();
-        map.insert(&key1, &value2)?;
-        assert_eq!(map.get(&key1)?.unwrap().value()?, "value2");
+        let value2 = "value2";
+        map.insert(key1, value2)?;
+        assert_eq!(map.get(key1)?.unwrap().value()?, "value2");
 
         // Test remove (not supported yet)
-        let removed = map.remove(&key1)?;
+        let removed = map.remove(key1)?;
         assert!(removed.is_none()); // Remove not implemented yet
-        assert!(map.contains_key(&key1)?); // Should still be there
+        assert!(map.contains_key(key1)?); // Should still be there
         Ok(())
     }
 

@@ -20,8 +20,6 @@ where
     V: for<'b> BytesEncode<'b> + for<'b> BytesDecode<'b>,
     BS: ByteStore,
     S: BuildHasher,
-    // <K as opendiskmap::BytesEncode<'a>>::EItem: Sized,
-    // <V as opendiskmap::BytesDecode<'a>>::DItem: Sized,
 {
     pub fn new_from_key(
         key: &'a <K as BytesEncode<'a>>::EItem,
