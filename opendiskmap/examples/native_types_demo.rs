@@ -1,9 +1,9 @@
 use opendiskmap::byte_store::MMapFile;
-use opendiskmap::{DiskHashMap, Native, Str};
+use opendiskmap::{DiskHashMap, Native, Str, Result};
 use rustc_hash::FxBuildHasher;
 use tempfile::tempdir;
 
-fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+fn main() -> Result<()> {
     let dir = tempdir()?;
 
     // Create a persistent map with u32 keys and String values

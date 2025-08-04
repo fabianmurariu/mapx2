@@ -1,5 +1,5 @@
 use opendiskmap::byte_store::MMapFile;
-use opendiskmap::{DiskHashMap, Native, types::Arch};
+use opendiskmap::{DiskHashMap, Native, Result, types::Arch};
 use rkyv::{Archive, Deserialize, Serialize};
 use rustc_hash::FxBuildHasher;
 use tempfile::tempdir;
@@ -29,7 +29,7 @@ impl UserProfile {
     }
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+fn main() -> Result<()> {
     let dir = tempdir()?;
 
     // Create map with archived values for zero-copy access

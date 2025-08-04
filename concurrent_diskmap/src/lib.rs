@@ -240,7 +240,6 @@ mod tests {
     use super::*;
     use opendiskmap::{MMapFile, types::Str};
     use rustc_hash::FxBuildHasher;
-    use std::error::Error;
     use std::sync::Arc;
     use std::thread;
     use tempfile::TempDir;
@@ -290,7 +289,7 @@ mod tests {
                         map.insert(&key, &value)?;
                         assert_eq!(map.get(&key)?.unwrap().value()?, value);
                     }
-                    Ok::<_, Box<dyn Error + Send + Sync>>(())
+                    Ok::<_, opendiskmap::DiskMapError>(())
                 })
             })
             .collect();
