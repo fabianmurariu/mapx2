@@ -23,7 +23,7 @@ fn default_shard_amount() -> usize {
 /// A concurrent, sharded disk-backed hash map for String keys and String values.
 /// Each shard is a separate disk-backed hash map stored in its own subdirectory.
 /// This is a simplified version that works with specific types to avoid complex generic constraints.
-pub struct DiskHashMap<S = RandomState>
+pub struct DiskDashMap<S = RandomState>
 where
     S: BuildHasher + Clone,
 {
@@ -32,7 +32,7 @@ where
     hasher: S,
 }
 
-impl DiskHashMap<RandomState> {
+impl DiskDashMap<RandomState> {
     /// Create a new concurrent disk hash map in the given directory with default number of shards.
     pub fn new_in<P: AsRef<Path>>(dir: P) -> io::Result<Self> {
         Self::with_shards_in(dir, default_shard_amount())
@@ -49,7 +49,7 @@ impl DiskHashMap<RandomState> {
     }
 }
 
-impl<S> DiskHashMap<S>
+impl<S> DiskDashMap<S>
 where
     S: BuildHasher + Clone,
 {
@@ -227,7 +227,7 @@ mod tests {
     #[test]
     fn test_basic_operations() -> Result<(), Box<dyn Error + Send + Sync>> {
         let temp_dir = TempDir::new().unwrap();
-        let map = DiskHashMap::new_in(temp_dir.path()).unwrap();
+        let map = DiskDashMap::new_in(temp_dir.path()).unwrap();
 
         // Test insert and get
         assert!(
@@ -257,7 +257,7 @@ mod tests {
     #[test]
     fn test_concurrent_access() -> Result<(), Box<dyn Error + Send + Sync>> {
         let temp_dir = TempDir::new().unwrap();
-        let map = Arc::new(DiskHashMap::new_in(temp_dir.path()).unwrap());
+        let map = Arc::new(DiskDashMap::new_in(temp_dir.path()).unwrap());
 
         let handles: Vec<_> = (0..10)
             .map(|i| {
@@ -299,7 +299,7 @@ mod tests {
         let shard_count = 8; // Use a fixed shard count for predictable testing
         {
             let map =
-                DiskHashMap::with_hasher_and_shards_in(temp_dir.path(), FxBuildHasher, shard_count)
+                DiskDashMap::with_hasher_and_shards_in(temp_dir.path(), FxBuildHasher, shard_count)
                     .unwrap();
             map.insert("key1".to_string(), "value1".to_string());
             map.insert("key2".to_string(), "value2".to_string());
@@ -307,7 +307,7 @@ mod tests {
         }
 
         // Load from existing directory using the same deterministic hasher
-        let map = DiskHashMap::load_with_hasher_from(temp_dir.path(), FxBuildHasher).unwrap();
+        let map = DiskDashMap::load_with_hasher_from(temp_dir.path(), FxBuildHasher).unwrap();
         assert_eq!(map.get("key1")?.unwrap().value()?, "value1");
         assert_eq!(map.get("key2")?.unwrap().value()?, "value2");
         assert_eq!(map.get("key3")?.unwrap().value()?, "value3");
@@ -318,7 +318,7 @@ mod tests {
     #[test]
     fn test_shard_distribution() {
         let temp_dir = TempDir::new().unwrap();
-        let map = DiskHashMap::with_shards_in(temp_dir.path(), 8).unwrap();
+        let map = DiskDashMap::with_shards_in(temp_dir.path(), 8).unwrap();
 
         // Insert many keys and verify they're distributed across shards
         let mut shard_usage = vec![0; 8];
@@ -340,7 +340,7 @@ mod tests {
     #[test]
     fn test_clear() {
         let temp_dir = TempDir::new().unwrap();
-        let map = DiskHashMap::new_in(temp_dir.path()).unwrap();
+        let map = DiskDashMap::new_in(temp_dir.path()).unwrap();
 
         // Insert some data
         for i in 0..100 {
@@ -359,7 +359,7 @@ mod tests {
     #[test]
     fn test_concurrent_modifications() -> Result<(), Box<dyn Error + Send + Sync>> {
         let temp_dir = TempDir::new().unwrap();
-        let map = Arc::new(DiskHashMap::new_in(temp_dir.path()).unwrap());
+        let map = Arc::new(DiskDashMap::new_in(temp_dir.path()).unwrap());
 
         // Insert initial data
         for i in 0..100 {
