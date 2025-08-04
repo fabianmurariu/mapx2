@@ -1,4 +1,4 @@
-use std::error::Error;
+use crate::error::{DiskMapError, Result};
 use std::hash::BuildHasher;
 use std::marker::PhantomData;
 use std::ops::Deref;
@@ -49,7 +49,7 @@ pub trait BytesEncode<'a> {
     type EItem: 'a + ?Sized;
 
     /// Encode an item into bytes
-    fn bytes_encode(item: &'a Self::EItem) -> Result<CowBytes<'a>, Box<dyn Error + Sync + Send>>;
+    fn bytes_encode(item: &'a Self::EItem) -> Result<CowBytes<'a>>;
 
     fn eq_alt(l: &[u8], r: &[u8]) -> bool {
         l == r
@@ -65,7 +65,7 @@ pub trait BytesDecode<'a> {
     type DItem: 'a;
 
     /// Decode bytes into an item
-    fn bytes_decode(bytes: &'a [u8]) -> Result<Self::DItem, Box<dyn Error + Sync + Send>>;
+    fn bytes_decode(bytes: &'a [u8]) -> Result<Self::DItem>;
 }
 
 // pub trait BytesEqHash<'a>: BytesEncode<'a> + BytesDecode<'a> + Default {
@@ -113,7 +113,7 @@ where
 {
     type EItem = T;
 
-    fn bytes_encode(item: &'a Self::EItem) -> Result<CowBytes<'a>, Box<dyn Error + Sync + Send>> {
+    fn bytes_encode(item: &'a Self::EItem) -> Result<CowBytes<'a>> {
         Ok(CowBytes::Borrowed(bytemuck::bytes_of(item)))
     }
 
@@ -133,15 +133,14 @@ where
 {
     type DItem = T;
 
-    fn bytes_decode(bytes: &'a [u8]) -> Result<Self::DItem, Box<dyn Error + Sync + Send>> {
+    fn bytes_decode(bytes: &'a [u8]) -> Result<Self::DItem> {
         if bytes.len() != std::mem::size_of::<T>() {
-            return Err(format!(
+            return Err(DiskMapError::Decoding(format!(
                 "Invalid byte length for {}: expected {}, got {}",
                 std::any::type_name::<T>(),
                 std::mem::size_of::<T>(),
                 bytes.len()
-            )
-            .into());
+            )));
         }
         Ok(*bytemuck::from_bytes(bytes))
     }
@@ -151,7 +150,7 @@ where
 impl<'a> BytesEncode<'a> for Str {
     type EItem = str;
 
-    fn bytes_encode(item: &'a Self::EItem) -> Result<CowBytes<'a>, Box<dyn Error + Sync + Send>> {
+    fn bytes_encode(item: &'a Self::EItem) -> Result<CowBytes<'a>> {
         Ok(CowBytes::Borrowed(item.as_bytes()))
     }
 }
@@ -159,8 +158,8 @@ impl<'a> BytesEncode<'a> for Str {
 impl<'a> BytesDecode<'a> for Str {
     type DItem = &'a str;
 
-    fn bytes_decode(bytes: &'a [u8]) -> Result<Self::DItem, Box<dyn Error + Sync + Send>> {
-        std::str::from_utf8(bytes).map_err(|e| e.into())
+    fn bytes_decode(bytes: &'a [u8]) -> Result<Self::DItem> {
+        std::str::from_utf8(bytes).map_err(|e| DiskMapError::Decoding(e.to_string()))
     }
 }
 
@@ -168,7 +167,7 @@ impl<'a> BytesDecode<'a> for Str {
 impl<'a> BytesEncode<'a> for Bytes {
     type EItem = [u8];
 
-    fn bytes_encode(item: &'a Self::EItem) -> Result<CowBytes<'a>, Box<dyn Error + Sync + Send>> {
+    fn bytes_encode(item: &'a Self::EItem) -> Result<CowBytes<'a>> {
         Ok(CowBytes::Borrowed(item))
     }
 }
@@ -176,7 +175,7 @@ impl<'a> BytesEncode<'a> for Bytes {
 impl<'a> BytesDecode<'a> for Bytes {
     type DItem = &'a [u8];
 
-    fn bytes_decode(bytes: &'a [u8]) -> Result<Self::DItem, Box<dyn Error + Sync + Send>> {
+    fn bytes_decode(bytes: &'a [u8]) -> Result<Self::DItem> {
         Ok(bytes)
     }
 }
@@ -190,8 +189,9 @@ impl<
 {
     type EItem = T;
 
-    fn bytes_encode(item: &'a Self::EItem) -> Result<CowBytes<'a>, Box<dyn Error + Sync + Send>> {
-        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(item)?;
+    fn bytes_encode(item: &'a Self::EItem) -> Result<CowBytes<'a>> {
+        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(item)
+            .map_err(|e| DiskMapError::Serialization(e.to_string()))?;
         Ok(CowBytes::owned(bytes))
     }
 }
@@ -203,7 +203,8 @@ where
 {
     type DItem = &'a <T as Archive>::Archived;
 
-    fn bytes_decode(bytes: &'a [u8]) -> Result<Self::DItem, Box<dyn Error + Sync + Send>> {
-        Ok(rkyv::access::<rkyv::Archived<T>, rkyv::rancor::Error>(bytes).unwrap())
+    fn bytes_decode(bytes: &'a [u8]) -> Result<Self::DItem> {
+        rkyv::access::<rkyv::Archived<T>, rkyv::rancor::Error>(bytes)
+            .map_err(|e| DiskMapError::Decoding(e.to_string()))
     }
 }

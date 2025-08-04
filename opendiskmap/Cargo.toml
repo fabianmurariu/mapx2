@@ -24,6 +24,7 @@ modular-bitfield.workspace = true
 bytemuck = { workspace = true, features = ["derive"] }
 memmap2.workspace = true
 rustc-hash.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
 criterion = { workspace = true }
