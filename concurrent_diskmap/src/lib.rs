@@ -1,4 +1,3 @@
-use std::collections::hash_map::RandomState;
 use std::hash::BuildHasher;
 use std::io;
 use std::path::Path;
@@ -7,7 +6,10 @@ use std::sync::OnceLock;
 pub mod refs;
 
 use crossbeam_utils::CachePadded;
-use opendiskmap::{DiskHashMap as SingleThreadedDiskHashMap, byte_store::MMapFile, types::Str};
+use opendiskmap::{
+    ByteStore, DiskHashMap as SingleThreadedDiskHashMap,
+    types::{BytesDecode, BytesEncode},
+};
 use parking_lot::RwLock;
 use rustc_hash::FxBuildHasher;
 
@@ -20,19 +22,25 @@ fn default_shard_amount() -> usize {
     })
 }
 
-/// A concurrent, sharded disk-backed hash map for String keys and String values.
+/// A concurrent, sharded disk-backed hash map.
 /// Each shard is a separate disk-backed hash map stored in its own subdirectory.
-/// This is a simplified version that works with specific types to avoid complex generic constraints.
-pub struct DiskDashMap<S = RandomState>
+/// Generic over key type K, value type V, backing store BS, and hasher S.
+pub struct DiskDashMap<K, V, BS, S = FxBuildHasher>
 where
-    S: BuildHasher + Clone,
+    BS: ByteStore,
+    S: BuildHasher,
 {
     shift: usize,
-    shards: Box<[CachePadded<RwLock<SingleThreadedDiskHashMap<Str, Str, MMapFile>>>]>,
+    shards: Box<[CachePadded<RwLock<SingleThreadedDiskHashMap<K, V, BS, S>>>]>,
     hasher: S,
 }
 
-impl DiskDashMap<RandomState> {
+// For MMapFile backing store with default hasher
+impl<K, V> DiskDashMap<K, V, opendiskmap::MMapFile, FxBuildHasher>
+where
+    K: for<'a> BytesEncode<'a> + for<'a> BytesDecode<'a>,
+    V: for<'a> BytesEncode<'a> + for<'a> BytesDecode<'a>,
+{
     /// Create a new concurrent disk hash map in the given directory with default number of shards.
     pub fn new_in<P: AsRef<Path>>(dir: P) -> io::Result<Self> {
         Self::with_shards_in(dir, default_shard_amount())
@@ -40,18 +48,20 @@ impl DiskDashMap<RandomState> {
 
     /// Load an existing concurrent disk hash map from the given directory.
     pub fn load_from<P: AsRef<Path>>(dir: P) -> io::Result<Self> {
-        Self::load_with_hasher_from(dir, RandomState::new())
+        Self::load_with_hasher_from(dir, FxBuildHasher)
     }
 
     /// Create a new concurrent disk hash map with specified number of shards.
     pub fn with_shards_in<P: AsRef<Path>>(dir: P, shard_count: usize) -> io::Result<Self> {
-        Self::with_hasher_and_shards_in(dir, RandomState::new(), shard_count)
+        Self::with_hasher_and_shards_in(dir, FxBuildHasher, shard_count)
     }
 }
 
-impl<S> DiskDashMap<S>
+impl<K, V, S> DiskDashMap<K, V, opendiskmap::MMapFile, S>
 where
-    S: BuildHasher + Clone,
+    S: BuildHasher + Clone + Default,
+    K: for<'a> BytesEncode<'a> + for<'a> BytesDecode<'a>,
+    V: for<'a> BytesEncode<'a> + for<'a> BytesDecode<'a>,
 {
     /// Create a new concurrent disk hash map with a custom hasher and number of shards.
     pub fn with_hasher_and_shards_in<P: AsRef<Path>>(
@@ -145,50 +155,68 @@ where
             hasher,
         })
     }
+}
 
+impl<K, V, BS, S> DiskDashMap<K, V, BS, S>
+where
+    BS: ByteStore,
+    S: BuildHasher,
+    K: for<'a> BytesEncode<'a> + for<'a> BytesDecode<'a>,
+    V: for<'a> BytesEncode<'a> + for<'a> BytesDecode<'a>,
+{
     /// Get the shard index for a given key.
-    fn shard_for_key(&self, key: &str) -> usize {
-        let hash = self.hasher.hash_one(key);
-        (hash as usize) & ((1 << self.shift) - 1)
+    fn shard_for_key<'a>(
+        &self,
+        key: &'a <K as BytesEncode<'a>>::EItem,
+    ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
+        let key_bytes = K::bytes_encode(key)?;
+        let hash = K::hash_alt(&key_bytes, &self.hasher);
+        Ok((hash as usize) & ((1 << self.shift) - 1))
     }
 
     /// Get a value from the map.
-    pub fn get<'a, 'b: 'a>(
+    pub fn get<'a>(
         &'a self,
-        key: &'b str,
-    ) -> Result<
-        Option<Ref<'a, Str, Str, MMapFile, FxBuildHasher>>,
-        Box<dyn std::error::Error + Send + Sync>,
-    > {
-        let shard_idx = self.shard_for_key(key);
+        key: &'a <K as BytesEncode<'a>>::EItem,
+    ) -> Result<Option<Ref<'a, K, V, BS, S>>, Box<dyn std::error::Error + Send + Sync>> {
+        let shard_idx = self.shard_for_key(key)?;
         let shard = self.shards[shard_idx].read();
 
         Ref::new_from_key(key, shard)
     }
 
     /// Insert a key-value pair into the map.
-    pub fn insert(&self, key: String, value: String) -> Option<String> {
-        let shard_idx = self.shard_for_key(&key);
+    pub fn insert<'a>(
+        &'a self,
+        key: &'a <K as BytesEncode<'a>>::EItem,
+        value: &'a <V as BytesEncode<'a>>::EItem,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let shard_idx = self.shard_for_key(key)?;
         let mut shard = self.shards[shard_idx].write();
 
-        match shard.insert(&key, &value) {
-            Ok(old_value) => old_value.map(|v| v.to_string()),
-            Err(_) => None,
-        }
+        shard.insert(key, value)?;
+        Ok(())
     }
 
     /// Remove a key from the map.
     /// Note: Current opendiskmap doesn't support remove operation
-    pub fn remove(&self, _key: &str) -> Option<String> {
+    pub fn remove<'a>(
+        &self,
+        _key: &'a <K as BytesEncode<'a>>::EItem,
+    ) -> Result<Option<<V as BytesDecode<'a>>::DItem>, Box<dyn std::error::Error + Send + Sync>>
+    {
         // TODO: Implement when opendiskmap supports remove
-        None
+        Ok(None)
     }
 
     /// Check if the map contains a key.
-    pub fn contains_key(&self, key: &str) -> bool {
-        let shard_idx = self.shard_for_key(key);
+    pub fn contains_key<'a>(
+        &self,
+        key: &'a <K as BytesEncode<'a>>::EItem,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        let shard_idx = self.shard_for_key(key)?;
         let shard = self.shards[shard_idx].read();
-        shard.get(key).unwrap_or(None).is_some()
+        Ok(shard.get(key)?.is_some())
     }
 
     /// Get the number of shards.
@@ -218,6 +246,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use opendiskmap::{MMapFile, types::Str};
     use rustc_hash::FxBuildHasher;
     use std::error::Error;
     use std::sync::Arc;
@@ -227,37 +256,37 @@ mod tests {
     #[test]
     fn test_basic_operations() -> Result<(), Box<dyn Error + Send + Sync>> {
         let temp_dir = TempDir::new().unwrap();
-        let map = DiskDashMap::new_in(temp_dir.path()).unwrap();
+        let map: DiskDashMap<Str, Str, MMapFile, FxBuildHasher> =
+            DiskDashMap::new_in(temp_dir.path()).unwrap();
 
         // Test insert and get
-        assert!(
-            map.insert("key1".to_string(), "value1".to_string())
-                .is_none()
-        );
-        assert_eq!(map.get("key1")?.unwrap().value()?, "value1");
+        let key1 = "key1".to_string();
+        let value1 = "value1".to_string();
+        map.insert(&key1, &value1)?;
+        assert_eq!(map.get(&key1)?.unwrap().value()?, "value1");
 
         // Test contains_key
-        assert!(map.contains_key("key1"));
-        assert!(!map.contains_key("key2"));
+        assert!(map.contains_key(&key1)?);
+        let key2 = "key2".to_string();
+        assert!(!map.contains_key(&key2)?);
 
         // Test update
-        assert_eq!(
-            map.insert("key1".to_string(), "value2".to_string()),
-            Some("value1".to_string())
-        );
-        assert_eq!(map.get("key1")?.unwrap().value()?, "value2");
+        let value2 = "value2".to_string();
+        map.insert(&key1, &value2)?;
+        assert_eq!(map.get(&key1)?.unwrap().value()?, "value2");
 
         // Test remove (not supported yet)
-        let removed = map.remove("key1");
+        let removed = map.remove(&key1)?;
         assert!(removed.is_none()); // Remove not implemented yet
-        assert!(map.contains_key("key1")); // Should still be there
+        assert!(map.contains_key(&key1)?); // Should still be there
         Ok(())
     }
 
     #[test]
     fn test_concurrent_access() -> Result<(), Box<dyn Error + Send + Sync>> {
         let temp_dir = TempDir::new().unwrap();
-        let map = Arc::new(DiskDashMap::new_in(temp_dir.path()).unwrap());
+        let map: Arc<DiskDashMap<Str, Str, MMapFile, FxBuildHasher>> =
+            Arc::new(DiskDashMap::new_in(temp_dir.path()).unwrap());
 
         let handles: Vec<_> = (0..10)
             .map(|i| {
@@ -266,7 +295,7 @@ mod tests {
                     for j in 0..100 {
                         let key = format!("key_{}_{}", i, j);
                         let value = format!("value_{}_{}", i, j);
-                        map.insert(key.clone(), value.clone());
+                        map.insert(&key, &value)?;
                         assert_eq!(map.get(&key)?.unwrap().value()?, value);
                     }
                     Ok::<_, Box<dyn Error + Send + Sync>>(())
@@ -298,35 +327,47 @@ mod tests {
         // Create map and insert some data using a deterministic hasher
         let shard_count = 8; // Use a fixed shard count for predictable testing
         {
-            let map =
+            let map: DiskDashMap<Str, Str, MMapFile, FxBuildHasher> =
                 DiskDashMap::with_hasher_and_shards_in(temp_dir.path(), FxBuildHasher, shard_count)
                     .unwrap();
-            map.insert("key1".to_string(), "value1".to_string());
-            map.insert("key2".to_string(), "value2".to_string());
-            map.insert("key3".to_string(), "value3".to_string());
+            let key1 = "key1".to_string();
+            let value1 = "value1".to_string();
+            let key2 = "key2".to_string();
+            let value2 = "value2".to_string();
+            let key3 = "key3".to_string();
+            let value3 = "value3".to_string();
+            map.insert(&key1, &value1)?;
+            map.insert(&key2, &value2)?;
+            map.insert(&key3, &value3)?;
         }
 
         // Load from existing directory using the same deterministic hasher
-        let map = DiskDashMap::load_with_hasher_from(temp_dir.path(), FxBuildHasher).unwrap();
-        assert_eq!(map.get("key1")?.unwrap().value()?, "value1");
-        assert_eq!(map.get("key2")?.unwrap().value()?, "value2");
-        assert_eq!(map.get("key3")?.unwrap().value()?, "value3");
+        let map: DiskDashMap<Str, Str, MMapFile, FxBuildHasher> =
+            DiskDashMap::load_with_hasher_from(temp_dir.path(), FxBuildHasher).unwrap();
+        let key1 = "key1".to_string();
+        let key2 = "key2".to_string();
+        let key3 = "key3".to_string();
+        assert_eq!(map.get(&key1)?.unwrap().value()?, "value1");
+        assert_eq!(map.get(&key2)?.unwrap().value()?, "value2");
+        assert_eq!(map.get(&key3)?.unwrap().value()?, "value3");
         assert_eq!(map.len(), 3);
         Ok(())
     }
 
     #[test]
-    fn test_shard_distribution() {
+    fn test_shard_distribution() -> Result<(), Box<dyn Error + Send + Sync>> {
         let temp_dir = TempDir::new().unwrap();
-        let map = DiskDashMap::with_shards_in(temp_dir.path(), 8).unwrap();
+        let map: DiskDashMap<Str, Str, MMapFile, FxBuildHasher> =
+            DiskDashMap::with_shards_in(temp_dir.path(), 8).unwrap();
 
         // Insert many keys and verify they're distributed across shards
         let mut shard_usage = vec![0; 8];
         for i in 0..1000 {
             let key = format!("key_{}", i);
-            let shard_idx = map.shard_for_key(&key);
+            let value = format!("value_{}", i);
+            let shard_idx = map.shard_for_key(&key)?;
             shard_usage[shard_idx] += 1;
-            map.insert(key, format!("value_{}", i));
+            map.insert(&key, &value)?;
         }
 
         // Verify all shards are used (probabilistically very likely with 1000 keys)
@@ -335,16 +376,20 @@ mod tests {
         // Verify total count
         assert_eq!(shard_usage.iter().sum::<usize>(), 1000);
         assert_eq!(map.len(), 1000);
+        Ok(())
     }
 
     #[test]
-    fn test_clear() {
+    fn test_clear() -> Result<(), Box<dyn Error + Send + Sync>> {
         let temp_dir = TempDir::new().unwrap();
-        let map = DiskDashMap::new_in(temp_dir.path()).unwrap();
+        let map: DiskDashMap<Str, Str, MMapFile, FxBuildHasher> =
+            DiskDashMap::new_in(temp_dir.path()).unwrap();
 
         // Insert some data
         for i in 0..100 {
-            map.insert(format!("key_{}", i), format!("value_{}", i));
+            let key = format!("key_{}", i);
+            let value = format!("value_{}", i);
+            map.insert(&key, &value)?;
         }
         assert_eq!(map.len(), 100);
 
@@ -353,17 +398,22 @@ mod tests {
         // Clear is not implemented yet, so data should still be there
         assert_eq!(map.len(), 100);
         assert!(!map.is_empty());
-        assert!(map.contains_key("key_0"));
+        let key_0 = "key_0".to_string();
+        assert!(map.contains_key(&key_0)?);
+        Ok(())
     }
 
     #[test]
     fn test_concurrent_modifications() -> Result<(), Box<dyn Error + Send + Sync>> {
         let temp_dir = TempDir::new().unwrap();
-        let map = Arc::new(DiskDashMap::new_in(temp_dir.path()).unwrap());
+        let map: Arc<DiskDashMap<Str, Str, MMapFile, FxBuildHasher>> =
+            Arc::new(DiskDashMap::new_in(temp_dir.path()).unwrap());
 
         // Insert initial data
         for i in 0..100 {
-            map.insert(format!("key_{}", i), format!("value_{}", i * 2));
+            let key = format!("key_{}", i);
+            let value = format!("value_{}", i * 2);
+            map.insert(&key, &value)?;
         }
 
         let handles: Vec<_> = (0..4)
@@ -384,7 +434,8 @@ mod tests {
                             // Writer thread - updates existing values
                             for i in 0..50 {
                                 let key = format!("key_{}", i);
-                                map.insert(key, format!("updated_{}", i * 4));
+                                let value = format!("updated_{}", i * 4);
+                                map.insert(&key, &value).unwrap();
                             }
                         }
                         2 => {
@@ -398,7 +449,8 @@ mod tests {
                             // Inserter thread - adds new values
                             for i in 100..150 {
                                 let key = format!("key_{}", i);
-                                map.insert(key, format!("new_{}", i * 2));
+                                let value = format!("new_{}", i * 2);
+                                map.insert(&key, &value).unwrap();
                             }
                         }
                         _ => unreachable!(),

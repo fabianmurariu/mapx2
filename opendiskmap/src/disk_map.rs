@@ -268,11 +268,11 @@ impl<
     }
 
     /// Insert a key-value pair into the map using the trait-based API
-    pub fn insert<'a>(
-        &'a mut self,
+    pub fn insert<'a, 'b>(
+        &'b mut self,
         key: &'a <K as BytesEncode<'a>>::EItem,
         value: &'a <V as BytesEncode<'a>>::EItem,
-    ) -> Result<Option<<V as BytesDecode<'a>>::DItem>, Box<dyn std::error::Error + Sync + Send>>
+    ) -> Result<Option<<V as BytesDecode<'b>>::DItem>, Box<dyn std::error::Error + Sync + Send>>
     {
         if self.should_resize() {
             self.grow()?;
