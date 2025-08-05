@@ -1,6 +1,6 @@
 use concurrent_diskmap::DiskDashMap;
 use opendiskmap::{
-    DiskMapError, MMapFile,
+    MMapFile,
     types::{Native, Str},
 };
 use rand::distr::Alphanumeric;
@@ -77,80 +77,80 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let items_per_second = items_per_micro * 1_000_000;
     println!("Loading throughput: {items_per_second} items/second");
 
-    // // Final verification: go over all values from std HashMap and check they exist in DiskDashMap
-    // println!("Performing final verification...");
-    // let start = Instant::now();
+    // Final verification: go over all values from std HashMap and check they exist in DiskDashMap
+    println!("Performing final verification...");
+    let start = Instant::now();
 
-    // let mut verified_final = 0;
-    // let mut missing_keys = Vec::new();
-    // let mut value_mismatches = Vec::new();
+    let mut verified_final = 0;
+    let mut missing_keys = Vec::new();
+    let mut value_mismatches = Vec::new();
 
-    // for (key, expected_value) in &std_map {
-    //     match disk_map.get(key) {
-    //         Ok(Some(retrieved_ref)) => match retrieved_ref.value() {
-    //             Ok(retrieved_value) => {
-    //                 if retrieved_value == *expected_value {
-    //                     verified_final += 1;
-    //                 } else {
-    //                     value_mismatches.push((key.clone(), *expected_value, retrieved_value));
-    //                 }
-    //             }
-    //             Err(e) => {
-    //                 eprintln!("Error retrieving value for key '{key}': {e}");
-    //             }
-    //         },
-    //         Ok(None) => {
-    //             missing_keys.push(key.clone());
-    //         }
-    //         Err(e) => {
-    //             eprintln!("Error looking up key '{key}': {e}");
-    //         }
-    //     }
-    // }
+    for (key, expected_value) in &std_map {
+        match disk_map.get(key) {
+            Ok(Some(retrieved_ref)) => match retrieved_ref.value() {
+                Ok(retrieved_value) => {
+                    if retrieved_value == *expected_value {
+                        verified_final += 1;
+                    } else {
+                        value_mismatches.push((key.clone(), *expected_value, retrieved_value));
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Error retrieving value for key '{key}': {e}");
+                }
+            },
+            Ok(None) => {
+                missing_keys.push(key.clone());
+            }
+            Err(e) => {
+                eprintln!("Error looking up key '{key}': {e}");
+            }
+        }
+    }
 
-    // let verification_time = start.elapsed();
+    let verification_time = start.elapsed();
 
-    // // Report results
-    // println!("\n=== Final Results ===");
-    // println!("Original HashMap size: {}", std_map.len());
-    // println!("DiskDashMap size: {}", disk_map.len());
-    // println!("Successfully verified: {verified_final}");
-    // println!("Missing keys: {}", missing_keys.len());
-    // println!("Value mismatches: {}", value_mismatches.len());
-    // println!("Final verification time: {verification_time:?}");
+    // Report results
+    println!("\n=== Final Results ===");
+    println!("Original HashMap size: {}", std_map.len());
+    println!("DiskDashMap size: {}", disk_map.len());
+    println!("Successfully verified: {verified_final}");
+    println!("Missing keys: {}", missing_keys.len());
+    println!("Value mismatches: {}", value_mismatches.len());
+    println!("Final verification time: {verification_time:?}");
 
-    // if !missing_keys.is_empty() {
-    //     println!(
-    //         "First 10 missing keys: {:?}",
-    //         &missing_keys[..missing_keys.len().min(10)]
-    //     );
-    // }
+    if !missing_keys.is_empty() {
+        println!(
+            "First 10 missing keys: {:?}",
+            &missing_keys[..missing_keys.len().min(10)]
+        );
+    }
 
-    // if !value_mismatches.is_empty() {
-    //     println!("First 10 value mismatches:");
-    //     for (key, expected, actual) in value_mismatches.iter().take(10) {
-    //         println!("  Key '{key}': expected {expected}, got {actual}");
-    //     }
-    // }
+    if !value_mismatches.is_empty() {
+        println!("First 10 value mismatches:");
+        for (key, expected, actual) in value_mismatches.iter().take(10) {
+            println!("  Key '{key}': expected {expected}, got {actual}");
+        }
+    }
 
-    // // Performance summary
-    // println!("\n=== Performance Summary ===");
-    // println!("HashMap generation: {generation_time:?}");
-    // println!("Concurrent loading: {loading_time:?}");
-    // println!("Final verification: {verification_time:?}");
-    // println!(
-    //     "Total time: {:?}",
-    //     generation_time + loading_time + verification_time
-    // );
+    // Performance summary
+    println!("\n=== Performance Summary ===");
+    println!("HashMap generation: {generation_time:?}");
+    println!("Concurrent loading: {loading_time:?}");
+    println!("Final verification: {verification_time:?}");
+    println!(
+        "Total time: {:?}",
+        generation_time + loading_time + verification_time
+    );
 
-    // let items_per_second = n_items as f64 / loading_time.as_secs_f64();
-    // println!("Loading throughput: {items_per_second:.0} items/second");
+    let items_per_second = n_items as f64 / loading_time.as_secs_f64();
+    println!("Loading throughput: {items_per_second:.0} items/second");
 
-    // if verified_final == std_map.len() && missing_keys.is_empty() && value_mismatches.is_empty() {
-    //     println!("\n✅ SUCCESS: All items were correctly loaded and verified!");
-    // } else {
-    //     println!("\n❌ FAILURE: Some items were not correctly loaded or verified.");
-    //     return Err("Verification failed".into());
-    // }
+    if verified_final == std_map.len() && missing_keys.is_empty() && value_mismatches.is_empty() {
+        println!("\n✅ SUCCESS: All items were correctly loaded and verified!");
+    } else {
+        println!("\n❌ FAILURE: Some items were not correctly loaded or verified.");
+        return Err("Verification failed".into());
+    }
     Ok(())
 }

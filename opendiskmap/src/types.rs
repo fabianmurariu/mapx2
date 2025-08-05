@@ -1,5 +1,5 @@
 use crate::error::{DiskMapError, Result};
-use std::hash::BuildHasher;
+use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::ops::Deref;
 
@@ -55,8 +55,10 @@ pub trait BytesEncode<'a> {
         l == r
     }
 
-    fn hash_alt<S: BuildHasher>(item: &[u8], s: &S) -> u64 {
-        s.hash_one(item)
+    fn hash_alt<S: Hasher>(item: &[u8], s: &mut S) -> u64 {
+        // s.hash_one(item)
+        item.hash(s);
+        s.finish()
     }
 }
 
@@ -121,9 +123,10 @@ where
         bytemuck::from_bytes::<T>(l) == bytemuck::from_bytes::<T>(r)
     }
 
-    fn hash_alt<S: BuildHasher>(item: &[u8], s: &S) -> u64 {
+    fn hash_alt<S: Hasher>(item: &[u8], s: &mut S) -> u64 {
         let value = bytemuck::from_bytes::<T>(item);
-        s.hash_one(value)
+        value.hash(s);
+        s.finish()
     }
 }
 

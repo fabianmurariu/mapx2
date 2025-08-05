@@ -250,7 +250,9 @@ impl<
                     .keys
                     .get(entry.key_pos())
                     .expect("key must exist for occupied entry");
-                let hash = <K as BytesEncode>::hash_alt(key_data, &self.hasher);
+
+                let mut hasher = self.hasher.build_hasher();
+                let hash = <K as BytesEncode>::hash_alt(key_data, &mut hasher);
                 let mut index = hash as usize % actual_new_capacity;
 
                 // Linear probing in the new_entries array
@@ -328,7 +330,10 @@ impl<
         self.find_slot(
             key,
             |l, r| <K as BytesEncode>::eq_alt(l, r),
-            |k| <K as BytesEncode>::hash_alt(k, &self.hasher), // Use the same hash function as grow()
+            |k| {
+                let mut hasher = self.hasher.build_hasher();
+                <K as BytesEncode>::hash_alt(k, &mut hasher)
+            }, // Use the same hash function as grow()
         )
     }
 

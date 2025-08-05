@@ -181,10 +181,15 @@ where
     V: for<'a> BytesEncode<'a> + for<'a> BytesDecode<'a>,
 {
     /// Get the shard index for a given key.
+    /// Uses a different hash calculation than the individual shard's find_slot to ensure
+    /// better distribution and avoid hash collisions between shard selection and slot selection.
     fn shard_for_key<'a>(&self, key: &'a <K as BytesEncode<'a>>::EItem) -> Result<usize> {
         let key_bytes = K::bytes_encode(key)?;
-        let hash = K::hash_alt(&key_bytes, &self.hasher);
-        Ok((hash as usize) & ((1 << self.shift) - 1))
+        let mut hasher = self.hasher.build_hasher();
+        let base_hash = K::hash_alt(&key_bytes, &mut hasher);
+
+        // Ok(base_hash as usize % self.shards.len())
+        Ok((base_hash as usize) & ((1 << self.shift) - 1))
     }
 
     /// Get a value from the map.
