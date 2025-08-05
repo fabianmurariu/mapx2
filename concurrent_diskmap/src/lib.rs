@@ -7,7 +7,7 @@ pub mod refs;
 
 use crossbeam_utils::CachePadded;
 use opendiskmap::{
-    ByteStore, DiskHashMap as OpenDiskHM, Result,
+    ByteStore, DiskHashMap as OpenDiskHM, MMapFile, Result,
     types::{BytesDecode, BytesEncode},
 };
 use parking_lot::RwLock;
@@ -53,7 +53,22 @@ where
 
     /// Create a new concurrent disk hash map with specified number of shards.
     pub fn with_shards_in<P: AsRef<Path>>(dir: P, shard_count: usize) -> io::Result<Self> {
-        Self::with_hasher_and_shards_in(dir, FxBuildHasher, shard_count)
+        Self::with_hasher_and_shards_in(dir, FxBuildHasher, shard_count, |path| {
+            OpenDiskHM::new_in(path)
+        })
+    }
+
+    /// Create a new concurrent disk hash map with capacity pre-allocated for keys and values and entries
+    /// the num_keys, key_capacity, and values_capacity parameters are per each shard
+    pub fn new_with_capacity<P: AsRef<Path>>(
+        dir: P,
+        num_keys: usize,
+        keys_capacity: usize,
+        values_capacity: usize,
+    ) -> io::Result<Self> {
+        Self::with_hasher_and_shards_in(dir, FxBuildHasher, default_shard_amount(), |path| {
+            OpenDiskHM::with_capacity(path, num_keys, keys_capacity, values_capacity)
+        })
     }
 }
 
@@ -68,6 +83,7 @@ where
         dir: P,
         hasher: S,
         shard_count: usize,
+        builder: impl Fn(&Path) -> io::Result<OpenDiskHM<K, V, MMapFile, S>>,
     ) -> io::Result<Self> {
         let shard_count = shard_count.next_power_of_two();
         let shift = shard_count.trailing_zeros() as usize;
@@ -84,7 +100,7 @@ where
             std::fs::create_dir_all(&shard_dir)?;
 
             // Create a hash map for this shard
-            let map = OpenDiskHM::new_in(&shard_dir)?;
+            let map = builder(&shard_dir)?;
             shards.push(CachePadded::new(RwLock::new(map)));
         }
 
@@ -319,8 +335,13 @@ mod tests {
         let shard_count = 8; // Use a fixed shard count for predictable testing
         {
             let map: DiskDashMap<Str, Str, MMapFile, FxBuildHasher> =
-                DiskDashMap::with_hasher_and_shards_in(temp_dir.path(), FxBuildHasher, shard_count)
-                    .unwrap();
+                DiskDashMap::with_hasher_and_shards_in(
+                    temp_dir.path(),
+                    FxBuildHasher,
+                    shard_count,
+                    OpenDiskHM::new_in,
+                )
+                .unwrap();
             let key1 = "key1".to_string();
             let value1 = "value1".to_string();
             let key2 = "key2".to_string();
