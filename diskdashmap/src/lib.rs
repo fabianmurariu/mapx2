@@ -21,7 +21,7 @@ fn default_shard_amount() -> usize {
         (std::thread::available_parallelism().map_or(1, usize::from) * 4).next_power_of_two()
     })
 }
-
+pub type Shard<K, V, BS, S> = CachePadded<RwLock<OpenDiskHM<K, V, BS, S>>>;
 /// A concurrent, sharded disk-backed hash map.
 /// Each shard is a separate disk-backed hash map stored in its own subdirectory.
 /// Generic over key type K, value type V, backing store BS, and hasher S.
@@ -31,7 +31,7 @@ where
     S: BuildHasher,
 {
     shift: usize,
-    shards: Box<[CachePadded<RwLock<OpenDiskHM<K, V, BS, S>>>]>,
+    shards: Box<[Shard<K, V, BS, S>]>,
     hasher: S,
 }
 
@@ -180,7 +180,7 @@ where
     K: for<'a> BytesEncode<'a> + for<'a> BytesDecode<'a>,
     V: for<'a> BytesEncode<'a> + for<'a> BytesDecode<'a>,
 {
-    pub fn shards(&self) -> &[CachePadded<RwLock<OpenDiskHM<K, V, BS, S>>>] {
+    pub fn shards(&self) -> &[Shard<K, V, BS, S>] {
         &self.shards
     }
 
