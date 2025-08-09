@@ -1,5 +1,5 @@
 [package]
-name = "concurrent_diskmap"
+name = "diskdashmap"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -17,4 +17,19 @@ description = "Multi-threaded disk-backed hash map with sharded locking (work in
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
+[features]
+rkyv = ["opendiskmap/rkyv"]
+
 [dependencies]
+opendiskmap = { path = "../opendiskmap" }
+parking_lot.workspace = true
+rustc-hash.workspace = true
+crossbeam-utils.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+proptest.workspace = true
+rand.workspace = true
+rand_chacha.workspace = true
+rayon.workspace = true

@@ -7,6 +7,7 @@ use rustc_hash::FxBuildHasher;
 
 use crate::byte_store::{MMapFile, VecStore};
 use crate::entry::Entry;
+use crate::error::Result;
 use crate::fixed_buffers::FixedVec;
 use crate::storage::MapStorage;
 use crate::types::{BytesDecode, BytesEncode, Native, Str};
@@ -21,7 +22,7 @@ pub type StringStringMap<BS = VecStore> = DiskHashMap<Str, Str, BS>;
 pub enum MapEntry<'a, K, V, BS, S = FxBuildHasher>
 where
     BS: ByteStore,
-    S: BuildHasher + Default,
+    S: BuildHasher,
 {
     Occupied(OccupiedEntry<'a, K, V, BS, S>),
     Vacant(VacantEntry<'a, K, V, BS, S>),
@@ -58,7 +59,7 @@ where
 pub struct OccupiedEntry<'a, K, V, BS, S = FxBuildHasher>
 where
     BS: ByteStore,
-    S: BuildHasher + Default,
+    S: BuildHasher,
 {
     map: &'a mut DiskHashMap<K, V, BS, S>,
     slot_idx: usize,
@@ -68,7 +69,7 @@ where
 pub struct VacantEntry<'a, K, V, BS, S = FxBuildHasher>
 where
     BS: ByteStore,
-    S: BuildHasher + Default,
+    S: BuildHasher,
 {
     map: &'a mut DiskHashMap<K, V, BS, S>,
     key: Vec<u8>,
@@ -84,7 +85,7 @@ where
 pub struct DiskHashMap<K, V, BS, S = FxBuildHasher>
 where
     BS: ByteStore,
-    S: BuildHasher + Default,
+    S: BuildHasher,
 {
     entries: FixedVec<Entry, BS>,
     keys: Buffers<BS>,
@@ -123,7 +124,13 @@ where
             _marker: PhantomData,
         }
     }
+}
 
+impl<K, V, BS, S> DiskHashMap<K, V, BS, S>
+where
+    BS: ByteStore,
+    S: BuildHasher,
+{
     /// Returns the number of key-value pairs in the map
     pub fn len(&self) -> usize {
         self.size
@@ -168,7 +175,7 @@ where
         key: &[u8],
         mut eq_fn: impl FnMut(&[u8], &[u8]) -> bool,
         hash_fn: impl Fn(&[u8]) -> u64,
-    ) -> Result<usize, usize> {
+    ) -> std::result::Result<usize, usize> {
         if self.capacity == 0 {
             return Err(0);
         }
@@ -220,13 +227,13 @@ where
 }
 
 impl<
-    K: for<'a> BytesEncode<'a>,
+    K: for<'a> BytesEncode<'a> + for<'a> BytesDecode<'a>,
     V: for<'a> BytesEncode<'a> + for<'a> BytesDecode<'a>,
     BS: ByteStore,
-    S: BuildHasher + Default,
+    S: BuildHasher,
 > DiskHashMap<K, V, BS, S>
 {
-    fn grow(&mut self) -> Result<(), Box<dyn std::error::Error + Sync + Send>> {
+    fn grow(&mut self) -> Result<()> {
         let new_capacity = if self.capacity == 0 {
             16
         } else {
@@ -243,7 +250,9 @@ impl<
                     .keys
                     .get(entry.key_pos())
                     .expect("key must exist for occupied entry");
-                let hash = <K as BytesEncode>::hash_alt(key_data, &self.hasher);
+
+                let mut hasher = self.hasher.build_hasher();
+                let hash = <K as BytesEncode>::hash_alt(key_data, &mut hasher);
                 let mut index = hash as usize % actual_new_capacity;
 
                 // Linear probing in the new_entries array
@@ -262,12 +271,11 @@ impl<
     }
 
     /// Insert a key-value pair into the map using the trait-based API
-    pub fn insert<'a>(
-        &'a mut self,
+    pub fn insert<'a, 'b>(
+        &'b mut self,
         key: &'a <K as BytesEncode<'a>>::EItem,
         value: &'a <V as BytesEncode<'a>>::EItem,
-    ) -> Result<Option<<V as BytesDecode<'a>>::DItem>, Box<dyn std::error::Error + Sync + Send>>
-    {
+    ) -> Result<Option<<V as BytesDecode<'b>>::DItem>> {
         if self.should_resize() {
             self.grow()?;
         }
@@ -283,8 +291,7 @@ impl<
         &mut self,
         key_bytes: &[u8],
         value_bytes: &[u8],
-    ) -> Result<Option<<V as BytesDecode<'_>>::DItem>, Box<dyn std::error::Error + Sync + Send>>
-    {
+    ) -> Result<Option<<V as BytesDecode<'_>>::DItem>> {
         match self.find_slot_inner(key_bytes) {
             Err(slot_idx) => {
                 // Found an empty slot, insert new key-value pair
@@ -303,8 +310,7 @@ impl<
         &mut self,
         slot_idx: usize,
         value_bytes: &[u8],
-    ) -> Result<Option<<V as BytesDecode<'_>>::DItem>, Box<dyn std::error::Error + Sync + Send>>
-    {
+    ) -> Result<Option<<V as BytesDecode<'_>>::DItem>> {
         let entry = &mut self.entries[slot_idx];
         let old_value_idx = entry.value_pos();
         let new_value_idx = self.values.append(value_bytes);
@@ -320,11 +326,14 @@ impl<
         Ok(Some(old_value))
     }
 
-    fn find_slot_inner(&self, key: &[u8]) -> Result<usize, usize> {
+    pub fn find_slot_inner(&self, key: &[u8]) -> std::result::Result<usize, usize> {
         self.find_slot(
             key,
             |l, r| <K as BytesEncode>::eq_alt(l, r),
-            |k| <K as BytesEncode>::hash_alt(k, &self.hasher), // Use the same hash function as grow()
+            |k| {
+                let mut hasher = self.hasher.build_hasher();
+                <K as BytesEncode>::hash_alt(k, &mut hasher)
+            }, // Use the same hash function as grow()
         )
     }
 
@@ -332,8 +341,37 @@ impl<
     pub fn get<'a>(
         &self,
         key: &'a <K as BytesEncode<'a>>::EItem,
-    ) -> Result<Option<<V as BytesDecode<'_>>::DItem>, Box<dyn std::error::Error + Sync + Send>>
-    {
+    ) -> Result<Option<<V as BytesDecode<'_>>::DItem>> {
+        self.find_entry(key)?.map_or(Ok(None), |entry| {
+            let value_bytes = self
+                .values
+                .get(entry.value_pos())
+                .expect("value must exist for occupied entry");
+            V::bytes_decode(value_bytes).map(Some)
+        })
+    }
+
+    pub fn get_key(&self, e: &Entry) -> Result<<K as BytesDecode<'_>>::DItem> {
+        let key_bytes = self
+            .keys
+            .get(e.key_pos())
+            .expect("key must exist for occupied entry");
+        let key = K::bytes_decode(key_bytes)?;
+
+        Ok(key)
+    }
+
+    pub fn get_value(&self, e: &Entry) -> Result<<V as BytesDecode<'_>>::DItem> {
+        let value_bytes = self
+            .values
+            .get(e.value_pos())
+            .expect("value must exist for occupied entry");
+        let value = V::bytes_decode(value_bytes)?;
+
+        Ok(value)
+    }
+
+    pub fn find_entry<'a>(&self, key: &'a <K as BytesEncode<'a>>::EItem) -> Result<Option<Entry>> {
         if self.is_empty() {
             return Ok(None);
         }
@@ -342,12 +380,11 @@ impl<
         match self.find_slot_inner(&key_bytes) {
             Ok(slot_idx) => {
                 let entry = &self.entries[slot_idx];
-                let value_bytes = self
-                    .values
-                    .get(entry.value_pos())
-                    .expect("value must exist for occupied entry");
-                let value = V::bytes_decode(value_bytes)?;
-                Ok(Some(value))
+                if entry.is_occupied() {
+                    Ok(Some(*entry))
+                } else {
+                    Ok(None)
+                }
             }
             Err(_) => Ok(None),
         }
@@ -357,7 +394,7 @@ impl<
     pub fn entry<'a>(
         &'a mut self,
         key: &'a <K as BytesEncode<'a>>::EItem,
-    ) -> Result<MapEntry<'a, K, V, BS, S>, Box<dyn std::error::Error + Sync + Send>>
+    ) -> Result<MapEntry<'a, K, V, BS, S>>
     where
         for<'b> K: BytesEncode<'b>,
         for<'b> V: BytesDecode<'b>,
@@ -530,22 +567,17 @@ impl<'a, K, V, BS, S> OccupiedEntry<'a, K, V, BS, S>
 where
     BS: ByteStore,
     S: BuildHasher + Default,
-    K: for<'b> BytesEncode<'b>,
+    K: for<'b> BytesEncode<'b> + for<'b> BytesDecode<'b>,
     V: for<'b> BytesEncode<'b> + for<'b> BytesDecode<'b>,
 {
     /// Get the value in the entry using the trait-based API
-    pub fn get(
-        &self,
-    ) -> Result<<V as BytesDecode<'_>>::DItem, Box<dyn std::error::Error + Sync + Send>> {
+    pub fn get(&self) -> Result<<V as BytesDecode<'_>>::DItem> {
         let value_bytes = self.value_bytes();
         V::bytes_decode(value_bytes)
     }
 
     /// Insert a new value into the entry, returning the old value
-    fn insert_bytes<V2: AsRef<[u8]>>(
-        self,
-        value: V2,
-    ) -> Result<<V as BytesDecode<'a>>::DItem, Box<dyn std::error::Error + Send + Sync>> {
+    fn insert_bytes<V2: AsRef<[u8]>>(self, value: V2) -> Result<<V as BytesDecode<'a>>::DItem> {
         self.map
             .update_existing_entry(self.slot_idx, value.as_ref())
             .map(|r| r.unwrap())
@@ -556,7 +588,7 @@ where
     pub fn insert(
         self,
         value: &'a <V as BytesEncode<'a>>::EItem,
-    ) -> Result<<V as BytesDecode<'a>>::DItem, Box<dyn std::error::Error + Sync + Send>> {
+    ) -> Result<<V as BytesDecode<'a>>::DItem> {
         let value_bytes = V::bytes_encode(value)?;
         self.insert_bytes(value_bytes.as_ref())
     }
@@ -565,15 +597,12 @@ where
     pub fn or_insert(
         self,
         value: &'a <V as BytesEncode<'a>>::EItem,
-    ) -> Result<<V as BytesDecode<'a>>::DItem, Box<dyn std::error::Error + Sync + Send>> {
+    ) -> Result<<V as BytesDecode<'a>>::DItem> {
         self.insert(value)
     }
 
     /// Insert the value returned by the closure if the entry is vacant using trait-based API
-    pub fn or_insert_with<F>(
-        self,
-        f: F,
-    ) -> Result<<V as BytesDecode<'a>>::DItem, Box<dyn std::error::Error + Sync + Send>>
+    pub fn or_insert_with<F>(self, f: F) -> Result<<V as BytesDecode<'a>>::DItem>
     where
         F: FnOnce() -> &'a <V as BytesEncode<'a>>::EItem,
     {
@@ -611,7 +640,7 @@ where
     pub fn insert(
         self,
         value: &'a <V as BytesEncode<'a>>::EItem,
-    ) -> Result<<V as BytesDecode<'a>>::DItem, Box<dyn std::error::Error + Sync + Send>> {
+    ) -> Result<<V as BytesDecode<'a>>::DItem> {
         let value_bytes = V::bytes_encode(value)?;
         let old_bytes = self.insert_bytes(value_bytes.as_ref());
         V::bytes_decode(old_bytes)
@@ -621,15 +650,12 @@ where
     pub fn or_insert(
         self,
         value: &'a <V as BytesEncode<'a>>::EItem,
-    ) -> Result<<V as BytesDecode<'a>>::DItem, Box<dyn std::error::Error + Sync + Send>> {
+    ) -> Result<<V as BytesDecode<'a>>::DItem> {
         self.insert(value)
     }
 
     /// Insert the value returned by the closure if the entry is vacant using trait-based API
-    pub fn or_insert_with<F>(
-        self,
-        f: F,
-    ) -> Result<<V as BytesDecode<'a>>::DItem, Box<dyn std::error::Error + Sync + Send>>
+    pub fn or_insert_with<F>(self, f: F) -> Result<<V as BytesDecode<'a>>::DItem>
     where
         F: FnOnce() -> &'a <V as BytesEncode<'a>>::EItem,
     {
@@ -640,9 +666,12 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{Arch, Native, Str};
+    #[cfg(feature = "rkyv")]
+    use crate::types::rkyv::Arch;
+    use crate::types::{Native, Str};
     use crate::{Bytes, VecStore};
     use proptest::prelude::*;
+    #[cfg(feature = "rkyv")]
     use rkyv::{Archive, Deserialize, Serialize};
     use rustc_hash::FxBuildHasher;
     use std::collections::HashMap as StdHashMap;
@@ -1195,6 +1224,7 @@ mod tests {
     }
 
     /// A complex data structure that we want to store and retrieve efficiently
+    #[cfg(feature = "rkyv")]
     #[derive(Archive, Deserialize, Serialize, Debug, Clone, PartialEq)]
     pub struct UserProfile {
         pub id: u32,
@@ -1204,6 +1234,7 @@ mod tests {
         pub metadata: Vec<(String, String)>,
     }
 
+    #[cfg(feature = "rkyv")]
     impl UserProfile {
         fn new(id: u32, name: &str) -> Self {
             Self {
@@ -1226,16 +1257,15 @@ mod tests {
         }
 
         /// Deserialize from bytes without copying (zero-copy)
-        fn from_bytes(
-            bytes: &[u8],
-        ) -> Result<&rkyv::Archived<UserProfile>, Box<dyn std::error::Error + Send + Sync>>
-        {
-            let archived = rkyv::access::<rkyv::Archived<UserProfile>, rkyv::rancor::Error>(bytes)
-                .map_err(|e| format!("Validation failed: {e}"))?;
-            Ok(archived)
+        fn from_bytes(bytes: &[u8]) -> Result<&rkyv::Archived<UserProfile>> {
+            Ok(rkyv::access::<
+                rkyv::Archived<UserProfile>,
+                rkyv::rancor::Error,
+            >(bytes)?)
         }
     }
 
+    #[cfg(feature = "rkyv")]
     #[test]
     fn simple_mmap_only_no_hash_map_rkyv_zerocopy() {
         let tmp_file = tempfile::NamedTempFile::new().expect("Failed to create temp dir");
@@ -1273,6 +1303,7 @@ mod tests {
         // check_alignment(1) this will fail, as it is not aligned
     }
 
+    #[cfg(feature = "rkyv")]
     #[test]
     fn archived_map() {
         let tempdir = tempfile::tempdir().expect("Failed to create temp dir");
@@ -1299,7 +1330,7 @@ mod tests {
         let tempdir = tempfile::tempdir().expect("Failed to create temp dir");
 
         // Test with valid capacities
-        let map_result: Result<DiskHashMap<Bytes, Bytes, MMapFile, FxBuildHasher>, _> =
+        let map_result: io::Result<DiskHashMap<Bytes, Bytes, MMapFile, FxBuildHasher>> =
             DiskHashMap::with_capacity(tempdir.path(), 8, 512, 1024);
         assert!(map_result.is_ok());
 
@@ -1333,7 +1364,7 @@ mod tests {
         let tempdir = tempfile::tempdir().expect("Failed to create temp dir");
 
         // Test zero num_entries
-        let result: Result<DiskHashMap<Bytes, Bytes, MMapFile, FxBuildHasher>, _> =
+        let result: io::Result<DiskHashMap<Bytes, Bytes, MMapFile, FxBuildHasher>> =
             DiskHashMap::with_capacity(tempdir.path().join("zero_entries"), 0, 512, 1024);
         assert!(result.is_err());
         if let Err(err) = result {
@@ -1341,7 +1372,7 @@ mod tests {
         }
 
         // Test zero keys_bytes
-        let result: Result<DiskHashMap<Bytes, Bytes, MMapFile, FxBuildHasher>, _> =
+        let result: io::Result<DiskHashMap<Bytes, Bytes, MMapFile, FxBuildHasher>> =
             DiskHashMap::with_capacity(tempdir.path().join("zero_keys"), 8, 0, 1024);
         assert!(result.is_err());
         if let Err(err) = result {
@@ -1349,7 +1380,7 @@ mod tests {
         }
 
         // Test zero values_bytes
-        let result: Result<DiskHashMap<Bytes, Bytes, MMapFile, FxBuildHasher>, _> =
+        let result: io::Result<DiskHashMap<Bytes, Bytes, MMapFile, FxBuildHasher>> =
             DiskHashMap::with_capacity(tempdir.path().join("zero_values"), 8, 512, 0);
         assert!(result.is_err());
         if let Err(err) = result {

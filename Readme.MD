@@ -24,10 +24,10 @@ There are no durability guarantees, but the data is stored in a memory-mapped fi
 
 ## 📦 Crates
 
-| Crate                                        | Description                                  | Status            |
-| -------------------------------------------- | -------------------------------------------- | ----------------- |
-| [`opendiskmap`](./opendiskmap)               | Single-threaded persistent hash map          | ✅ Stable         |
-| [`concurrent_diskmap`](./concurrent_diskmap) | Multi-threaded hash map with sharded locking | 🚧 In Development |
+| Crate                          | Description                                  | Status            |
+| ------------------------------ | -------------------------------------------- | ----------------- |
+| [`opendiskmap`](./opendiskmap) | Single-threaded persistent hash map          | ✅ Stable         |
+| [`diskdashmap`](./diskdashmap) | Multi-threaded hash map with sharded locking | 🚧 In Development |
 
 ## 🚀 Quick Start
 
@@ -42,10 +42,10 @@ rkyv = "0.7" # Optional: for zero-copy serialization
 ### Basic Usage with Native Types
 
 ```rust
-use opendiskmap::{DiskHashMap, Native, Str};
+use opendiskmap::{DiskHashMap, Native, Str, Result};
 use tempfile::tempdir;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<()> {
     let dir = tempdir()?;
 
     // Create a persistent map with u64 keys and String values
@@ -79,10 +79,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### Working with Raw Bytes
 
 ```rust
-use opendiskmap::{DiskHashMap, Bytes};
+use opendiskmap::{DiskHashMap, Bytes, Result};
 use tempfile::tempdir;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<()> {
     let dir = tempdir()?;
 
     let mut map: DiskHashMap<Bytes, Bytes, _, _> =
@@ -105,7 +105,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### Zero-Copy with rkyv
 
 ```rust
-use opendiskmap::{DiskHashMap, Native, types::Arch};
+use opendiskmap::{DiskHashMap, Native, types::Arch, Result};
 use rkyv::{Archive, Deserialize, Serialize};
 use tempfile::tempdir;
 
@@ -117,7 +117,7 @@ struct UserProfile {
     scores: Vec<f64>,
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<()> {
     let dir = tempdir()?;
 
     // Create map with archived values (zero-copy)
@@ -152,10 +152,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### Custom Capacity Configuration
 
 ```rust
-use opendiskmap::{DiskHashMap, Bytes};
+use opendiskmap::{DiskHashMap, Bytes, Result};
 use tempfile::tempdir;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<()> {
     let dir = tempdir()?;
 
     // Create map with specific capacities (rounded to power of 2)
@@ -181,10 +181,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### Type Aliases for Common Use Cases
 
 ```rust
-use opendiskmap::{U64StringMap, StringU64Map, StringStringMap};
+use opendiskmap::{U64StringMap, StringU64Map, StringStringMap, Result};
 use tempfile::tempdir;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<()> {
     let dir = tempdir()?;
 
     // u64 -> String mapping
@@ -214,10 +214,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### Entry API for Efficient Updates
 
 ```rust
-use opendiskmap::{DiskHashMap, Native, MapEntry};
+use opendiskmap::{DiskHashMap, Native, MapEntry, Result};
 use tempfile::tempdir;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<()> {
     let dir = tempdir()?;
     let mut map: DiskHashMap<Native<u64>, Native<u64>, _, _> =
         DiskHashMap::new_in(dir.path())?;

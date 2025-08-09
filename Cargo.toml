@@ -1,5 +1,5 @@
 [workspace]
-members = ["opendiskmap", "concurrent_diskmap"]
+members = ["opendiskmap", "diskdashmap"]
 resolver = "3"
 
 [workspace.package]
@@ -22,6 +22,7 @@ rust-version = "1.85"
 exclude = ["proptest-regressions/"]
 
 [workspace.dependencies]
+crossbeam-utils = "0.8.21"
 rkyv = "0.8.11"
 proptest = "1.7.0"
 proptest-derive = "0.6.0"
@@ -34,3 +35,11 @@ rustc-hash = "2.1.1"
 criterion = { version = "0.5", features = ["html_reports"] }
 sled = "0.34.7"
 rand = "0.9.2"
+rand_chacha = "0.9.0"
+rayon = "1.10.0"
+parking_lot = "0.12"
+thiserror = "2.0"
+
+[profile.release-with-debug]
+inherits = "release"
+debug = true
