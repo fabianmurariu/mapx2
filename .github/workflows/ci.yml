@@ -54,8 +54,8 @@ jobs:
       - name: Run tests (opendiskmap)
         run: cargo test -p opendiskmap --verbose
 
-      - name: Run tests (concurrent_diskmap)
-        run: cargo test -p concurrent_diskmap --verbose
+      - name: Run tests (diskdashmap)
+        run: cargo test -p diskdashmap --verbose
 
       - name: Build examples
         run: cargo build --examples

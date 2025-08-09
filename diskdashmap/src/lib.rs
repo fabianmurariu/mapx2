@@ -180,6 +180,10 @@ where
     K: for<'a> BytesEncode<'a> + for<'a> BytesDecode<'a>,
     V: for<'a> BytesEncode<'a> + for<'a> BytesDecode<'a>,
 {
+    pub fn shards(&self) -> &[CachePadded<RwLock<OpenDiskHM<K, V, BS, S>>>] {
+        &self.shards
+    }
+
     /// Get the shard index for a given key.
     /// Uses a different hash calculation than the individual shard's find_slot to ensure
     /// better distribution and avoid hash collisions between shard selection and slot selection.

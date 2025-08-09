@@ -24,10 +24,10 @@ There are no durability guarantees, but the data is stored in a memory-mapped fi
 
 ## 📦 Crates
 
-| Crate                                        | Description                                  | Status            |
-| -------------------------------------------- | -------------------------------------------- | ----------------- |
-| [`opendiskmap`](./opendiskmap)               | Single-threaded persistent hash map          | ✅ Stable         |
-| [`concurrent_diskmap`](./concurrent_diskmap) | Multi-threaded hash map with sharded locking | 🚧 In Development |
+| Crate                          | Description                                  | Status            |
+| ------------------------------ | -------------------------------------------- | ----------------- |
+| [`opendiskmap`](./opendiskmap) | Single-threaded persistent hash map          | ✅ Stable         |
+| [`diskdashmap`](./diskdashmap) | Multi-threaded hash map with sharded locking | 🚧 In Development |
 
 ## 🚀 Quick Start
 

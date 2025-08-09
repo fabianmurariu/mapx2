@@ -1,5 +1,5 @@
 [workspace]
-members = ["opendiskmap", "concurrent_diskmap"]
+members = ["opendiskmap", "diskdashmap"]
 resolver = "3"
 
 [workspace.package]

@@ -36,5 +36,5 @@ jobs:
       - name: Publish opendiskmap
         run: cargo publish -p opendiskmap --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
-      - name: Publish concurrent_diskmap
-        run: cargo publish -p concurrent_diskmap --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      - name: Publish diskdashmap
+        run: cargo publish -p diskdashmap --token ${{ secrets.CARGO_REGISTRY_TOKEN }}

@@ -1,6 +1,6 @@
-use concurrent_diskmap::DiskDashMap;
+use diskdashmap::DiskDashMap;
 use opendiskmap::{
-    MMapFile,
+    DiskMapError, MMapFile,
     types::{Native, Str},
 };
 use rand::distr::Alphanumeric;
@@ -63,13 +63,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let start = Instant::now();
 
     items.par_iter().try_for_each(|(k, v)| {
-        disk_map.insert(k, v)
-        // let act = disk_map.get(k)?.map(|x| x.value().unwrap()).unwrap();
-        // if act != *v {
-        //     return Err(DiskMapError::KeyNotFound);
-        // }
-        // Ok(())
+        disk_map.insert(k, v)?;
+        let act = disk_map.get(k)?.map(|x| x.value().unwrap()).unwrap();
+        if act != *v {
+            return Err(DiskMapError::KeyNotFound);
+        }
+        Ok(())
     })?;
+    let shard_lens = disk_map
+        .shards()
+        .iter()
+        .map(|shard| shard.read().len())
+        .collect::<Vec<_>>();
+    println!("Concurrent loading complete. Shard lengths: {shard_lens:?}");
 
     let loading_time = start.elapsed();
     println!("Loaded {}, items in {:?}", disk_map.len(), loading_time);
