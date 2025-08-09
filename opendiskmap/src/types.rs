@@ -3,12 +3,6 @@ use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::ops::Deref;
 
-use rkyv::Archive;
-use rkyv::api::high::{HighSerializer, HighValidator};
-use rkyv::bytecheck::CheckBytes;
-use rkyv::ser::allocator::ArenaHandle;
-use rkyv::util::AlignedVec;
-
 pub enum CowBytes<'a> {
     Borrowed(&'a [u8]),
     Owned(Box<dyn AsRef<[u8]> + 'a>),
@@ -56,7 +50,6 @@ pub trait BytesEncode<'a> {
     }
 
     fn hash_alt<S: Hasher>(item: &[u8], s: &mut S) -> u64 {
-        // s.hash_one(item)
         item.hash(s);
         s.finish()
     }
@@ -69,14 +62,6 @@ pub trait BytesDecode<'a> {
     /// Decode bytes into an item
     fn bytes_decode(bytes: &'a [u8]) -> Result<Self::DItem>;
 }
-
-// pub trait BytesEqHash<'a>: BytesEncode<'a> + BytesDecode<'a> + Default {
-//     /// Check if two items are equal
-//     fn bytes_eq(item1: &'a Self::EItem, item2: &'a Self::EItem) -> bool {}
-
-//     /// Get a hash of the item
-//     fn bytes_hash(item: &'a Self::EItem) -> u64;
-// }
 
 /// Wrapper for native types that can be represented as bytes (numbers, etc.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -183,31 +168,44 @@ impl<'a> BytesDecode<'a> for Bytes {
     }
 }
 
-pub struct Arch<T>(PhantomData<T>);
+#[cfg(feature = "rkyv")]
+pub mod rkyv {
+    use super::*;
+    use ::rkyv::Archive;
+    use ::rkyv::api::high::{HighSerializer, HighValidator};
+    use ::rkyv::bytecheck::CheckBytes;
+    use ::rkyv::ser::allocator::ArenaHandle;
+    use ::rkyv::util::AlignedVec;
+    use std::marker::PhantomData;
 
-impl<
-    'a,
-    T: for<'b> rkyv::Serialize<HighSerializer<AlignedVec, ArenaHandle<'b>, rkyv::rancor::Error>> + 'a,
-> BytesEncode<'a> for Arch<T>
-{
-    type EItem = T;
+    pub struct Arch<T>(PhantomData<T>);
 
-    fn bytes_encode(item: &'a Self::EItem) -> Result<CowBytes<'a>> {
-        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(item)
-            .map_err(|e| DiskMapError::Serialization(e.to_string()))?;
-        Ok(CowBytes::owned(bytes))
+    impl<
+        'a,
+        T: for<'b> ::rkyv::Serialize<
+                HighSerializer<AlignedVec, ArenaHandle<'b>, ::rkyv::rancor::Error>,
+            > + 'a,
+    > BytesEncode<'a> for Arch<T>
+    {
+        type EItem = T;
+
+        fn bytes_encode(item: &'a Self::EItem) -> Result<CowBytes<'a>> {
+            let bytes = ::rkyv::to_bytes::<::rkyv::rancor::Error>(item)
+                .map_err(|e| DiskMapError::Serialization(e.to_string()))?;
+            Ok(CowBytes::owned(bytes))
+        }
     }
-}
 
-impl<'a, T> BytesDecode<'a> for Arch<T>
-where
-    T: 'a + rkyv::Archive,
-    T::Archived: for<'b> CheckBytes<HighValidator<'b, rkyv::rancor::Error>>,
-{
-    type DItem = &'a <T as Archive>::Archived;
+    impl<'a, T> BytesDecode<'a> for Arch<T>
+    where
+        T: 'a + ::rkyv::Archive,
+        T::Archived: for<'b> CheckBytes<HighValidator<'b, ::rkyv::rancor::Error>>,
+    {
+        type DItem = &'a <T as Archive>::Archived;
 
-    fn bytes_decode(bytes: &'a [u8]) -> Result<Self::DItem> {
-        rkyv::access::<rkyv::Archived<T>, rkyv::rancor::Error>(bytes)
-            .map_err(|e| DiskMapError::Decoding(e.to_string()))
+        fn bytes_decode(bytes: &'a [u8]) -> Result<Self::DItem> {
+            ::rkyv::access::<::rkyv::Archived<T>, ::rkyv::rancor::Error>(bytes)
+                .map_err(|e| DiskMapError::Decoding(e.to_string()))
+        }
     }
 }

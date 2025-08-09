@@ -666,9 +666,12 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{Arch, Native, Str};
+    #[cfg(feature = "rkyv")]
+    use crate::types::rkyv::Arch;
+    use crate::types::{Native, Str};
     use crate::{Bytes, VecStore};
     use proptest::prelude::*;
+    #[cfg(feature = "rkyv")]
     use rkyv::{Archive, Deserialize, Serialize};
     use rustc_hash::FxBuildHasher;
     use std::collections::HashMap as StdHashMap;
@@ -1221,6 +1224,7 @@ mod tests {
     }
 
     /// A complex data structure that we want to store and retrieve efficiently
+    #[cfg(feature = "rkyv")]
     #[derive(Archive, Deserialize, Serialize, Debug, Clone, PartialEq)]
     pub struct UserProfile {
         pub id: u32,
@@ -1230,6 +1234,7 @@ mod tests {
         pub metadata: Vec<(String, String)>,
     }
 
+    #[cfg(feature = "rkyv")]
     impl UserProfile {
         fn new(id: u32, name: &str) -> Self {
             Self {
@@ -1260,6 +1265,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "rkyv")]
     #[test]
     fn simple_mmap_only_no_hash_map_rkyv_zerocopy() {
         let tmp_file = tempfile::NamedTempFile::new().expect("Failed to create temp dir");
@@ -1297,6 +1303,7 @@ mod tests {
         // check_alignment(1) this will fail, as it is not aligned
     }
 
+    #[cfg(feature = "rkyv")]
     #[test]
     fn archived_map() {
         let tempdir = tempfile::tempdir().expect("Failed to create temp dir");

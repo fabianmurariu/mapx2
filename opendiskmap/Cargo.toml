@@ -17,8 +17,11 @@ description = "Single-threaded disk-backed hash map with memory-mapped file back
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
+[features]
+rkyv = ["dep:rkyv"]
+
 [dependencies]
-rkyv.workspace = true
+rkyv = { workspace = true, optional = true }
 
 modular-bitfield.workspace = true
 bytemuck = { workspace = true, features = ["derive"] }

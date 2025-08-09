@@ -1,9 +1,15 @@
+#[cfg(feature = "rkyv")]
 use opendiskmap::byte_store::MMapFile;
-use opendiskmap::{DiskHashMap, Native, Result, types::Arch};
+#[cfg(feature = "rkyv")]
+use opendiskmap::{DiskHashMap, Native, Result, types::rkyv::Arch};
+#[cfg(feature = "rkyv")]
 use rkyv::{Archive, Deserialize, Serialize};
+#[cfg(feature = "rkyv")]
 use rustc_hash::FxBuildHasher;
+#[cfg(feature = "rkyv")]
 use tempfile::tempdir;
 
+#[cfg(feature = "rkyv")]
 #[derive(Archive, Deserialize, Serialize, Debug, PartialEq)]
 struct UserProfile {
     id: u32,
@@ -13,6 +19,7 @@ struct UserProfile {
     metadata: Vec<(String, String)>,
 }
 
+#[cfg(feature = "rkyv")]
 impl UserProfile {
     fn new(id: u32, name: &str, email: &str) -> Self {
         Self {
@@ -29,6 +36,7 @@ impl UserProfile {
     }
 }
 
+#[cfg(feature = "rkyv")]
 fn main() -> Result<()> {
     let dir = tempdir()?;
 
@@ -98,4 +106,10 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(not(feature = "rkyv"))]
+fn main() {
+    println!("This example requires the 'rkyv' feature to be enabled.");
+    println!("Run with: cargo run --example zero_copy_rkyv_demo --features rkyv");
 }

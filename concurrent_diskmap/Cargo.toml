@@ -17,6 +17,9 @@ description = "Multi-threaded disk-backed hash map with sharded locking (work in
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
+[features]
+rkyv = ["opendiskmap/rkyv"]
+
 [dependencies]
 opendiskmap = { path = "../opendiskmap" }
 parking_lot.workspace = true

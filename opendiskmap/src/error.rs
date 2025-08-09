@@ -32,6 +32,7 @@ pub enum DiskMapError {
     #[error("Invalid input: {0}")]
     InvalidInput(String),
 
+    #[cfg(feature = "rkyv")]
     #[error("Rkyv error: {0}")]
     RkyvError(#[from] rkyv::rancor::Error),
 }

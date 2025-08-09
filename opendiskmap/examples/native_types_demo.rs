@@ -1,5 +1,5 @@
 use opendiskmap::byte_store::MMapFile;
-use opendiskmap::{DiskHashMap, Native, Str, Result};
+use opendiskmap::{DiskHashMap, Native, Result, Str};
 use rustc_hash::FxBuildHasher;
 use tempfile::tempdir;
 

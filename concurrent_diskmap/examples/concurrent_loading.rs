@@ -38,7 +38,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let start = Instant::now();
     while std_map.len() < n_items {
         let i = rng.random_range(0..100_000_000); // Random values between 0 and 99,999
-        let key = generate_random_string(&mut rng, 20); // 20 character keys
+        let key = generate_random_string(&mut rng, 36); // 20 character keys
         std_map.insert(key, i);
     }
     let generation_time = start.elapsed();
