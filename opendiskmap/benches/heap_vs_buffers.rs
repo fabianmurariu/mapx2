@@ -244,7 +244,7 @@ fn bench_memory_efficiency(c: &mut Criterion) {
         group.throughput(Throughput::Bytes(total_bytes as u64));
 
         group.bench_with_input(
-            BenchmarkId::new(format!("heap_{}", name), 10_000),
+            BenchmarkId::new(format!("heap_{name}"), 10_000),
             &data,
             |b, data| {
                 b.iter(|| {
