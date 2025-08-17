@@ -9,9 +9,10 @@ use crate::byte_store::{MMapFile, VecStore};
 use crate::entry::Entry;
 use crate::error::Result;
 use crate::fixed_buffers::FixedVec;
+use crate::heap::HeapOps;
 use crate::storage::MapStorage;
 use crate::types::{BytesDecode, BytesEncode, Native, Str};
-use crate::{Buffers, ByteStore};
+use crate::{Buffers, ByteStore, Heap};
 
 // Type aliases for common use cases
 pub type U64StringMap<BS = VecStore> = DiskHashMap<Native<u64>, Str, BS>;
@@ -88,8 +89,7 @@ where
     S: BuildHasher,
 {
     entries: FixedVec<Entry, BS>,
-    keys: Buffers<BS>,
-    values: Buffers<BS>,
+    heap: Heap<BS>,
     capacity: usize,
     size: usize,
     hasher: S,
@@ -102,34 +102,35 @@ impl<K, V> Default for DiskHashMap<K, V, VecStore, FxBuildHasher> {
     }
 }
 
-impl<K, V, BS, S> DiskHashMap<K, V, BS, S>
-where
-    BS: ByteStore,
-    S: BuildHasher + Default,
-{
-    /// Creates a new HashMap with the given backing stores
-    pub fn with_stores(entry_store: BS, keys_store: BS, values_store: BS) -> Self {
-        let keys = Buffers::new(keys_store);
-        let values = Buffers::new(values_store);
-        let entries = FixedVec::new(entry_store);
-        let capacity = entries.capacity();
+// impl<K, V, BS, S> DiskHashMap<K, V, BS, S>
+// where
+//     BS: ByteStore,
+//     S: BuildHasher + Default,
+// {
+//     /// Creates a new HashMap with the given backing stores
+//     pub fn with_stores(entry_store: BS, keys_store: BS, values_store: BS) -> Self {
+//         let keys = Heap::new(keys_store);
+//         let values = Heap::new(values_store);
+//         let entries = FixedVec::new(entry_store);
+//         let capacity = entries.capacity();
 
-        Self {
-            keys,
-            values,
-            entries,
-            capacity,
-            size: 0,
-            hasher: S::default(),
-            _marker: PhantomData,
-        }
-    }
-}
+//         Self {
+//             keys,
+//             values,
+//             entries,
+//             capacity,
+//             size: 0,
+//             hasher: S::default(),
+//             _marker: PhantomData,
+//         }
+//     }
+// }
 
 impl<K, V, BS, S> DiskHashMap<K, V, BS, S>
 where
     BS: ByteStore,
     S: BuildHasher,
+    Heap<BS>: HeapOps<BS>,
 {
     /// Returns the number of key-value pairs in the map
     pub fn len(&self) -> usize {
@@ -163,10 +164,6 @@ where
         self.load_factor() > 0.4
     }
 
-    // fn hash_key(&self, key: &[u8]) -> u64 {
-    //     self.hasher.hash_one(key)
-    // }
-
     /// Find the slot index for a key
     /// if the key is found, returns Some(index),
     /// if the key is not found return the first empty slot index
@@ -193,7 +190,7 @@ where
 
             if !entry.is_deleted() {
                 // Check if this is our key
-                if let Some(stored_key) = self.keys.get(entry.key_pos()) {
+                if let Some(stored_key) = self.heap.get(entry.key_pos()) {
                     if eq_fn(key, stored_key) {
                         return Ok(index);
                     }
@@ -206,18 +203,18 @@ where
         Err(self.capacity)
     }
 
-    pub fn stats(&self) -> (u64, u64, u64) {
-        (
-            self.entries.store().stats(),
-            self.keys.store().stats(),
-            self.values.store().stats(),
-        )
-    }
+    // pub fn stats(&self) -> (u64, u64, u64) {
+    //     (
+    //         self.entries.store().stats(),
+    //         self.keys.store().stats(),
+    //         self.values.store().stats(),
+    //     )
+    // }
 
     /// Insert a new entry at the given slot index
     fn insert_new_entry(&mut self, slot_idx: usize, key_bytes: &[u8], value_bytes: &[u8]) -> Entry {
-        let key_idx = self.keys.append(key_bytes);
-        let value_idx = self.values.append(value_bytes);
+        let key_idx = self.heap.append(key_bytes);
+        let value_idx = self.heap.append(value_bytes);
 
         let entry = Entry::occupied_at_pos(key_idx, value_idx);
         self.entries[slot_idx] = entry;
@@ -232,6 +229,8 @@ impl<
     BS: ByteStore,
     S: BuildHasher,
 > DiskHashMap<K, V, BS, S>
+where
+    Heap<BS>: HeapOps<BS>,
 {
     fn grow(&mut self) -> Result<()> {
         let new_capacity = if self.capacity == 0 {
@@ -247,7 +246,7 @@ impl<
             let entry = self.entries[i];
             if entry.is_occupied() {
                 let key_data = self
-                    .keys
+                    .heap
                     .get(entry.key_pos())
                     .expect("key must exist for occupied entry");
 
@@ -313,12 +312,12 @@ impl<
     ) -> Result<Option<<V as BytesDecode<'_>>::DItem>> {
         let entry = &mut self.entries[slot_idx];
         let old_value_idx = entry.value_pos();
-        let new_value_idx = self.values.append(value_bytes);
+        let new_value_idx = self.heap.append(value_bytes);
         entry.set_new_kv(entry.key_pos(), new_value_idx);
 
         // Get the old value after the mutation
         let old_value_bytes = self
-            .values
+            .heap
             .get(old_value_idx)
             .expect("value must exist for occupied entry");
         let old_value = V::bytes_decode(old_value_bytes)?;
@@ -344,7 +343,7 @@ impl<
     ) -> Result<Option<<V as BytesDecode<'_>>::DItem>> {
         self.find_entry(key)?.map_or(Ok(None), |entry| {
             let value_bytes = self
-                .values
+                .heap
                 .get(entry.value_pos())
                 .expect("value must exist for occupied entry");
             V::bytes_decode(value_bytes).map(Some)
@@ -353,7 +352,7 @@ impl<
 
     pub fn get_key(&self, e: &Entry) -> Result<<K as BytesDecode<'_>>::DItem> {
         let key_bytes = self
-            .keys
+            .heap
             .get(e.key_pos())
             .expect("key must exist for occupied entry");
         let key = K::bytes_decode(key_bytes)?;
@@ -363,7 +362,7 @@ impl<
 
     pub fn get_value(&self, e: &Entry) -> Result<<V as BytesDecode<'_>>::DItem> {
         let value_bytes = self
-            .values
+            .heap
             .get(e.value_pos())
             .expect("value must exist for occupied entry");
         let value = V::bytes_decode(value_bytes)?;
@@ -428,10 +427,21 @@ impl<
     }
 }
 
-impl<K, V> DiskHashMap<K, V, VecStore, FxBuildHasher> {
+impl<K, V, S: BuildHasher + Default> DiskHashMap<K, V, VecStore, S> {
     /// Creates a new in-memory HashMap
     pub fn new() -> Self {
-        Self::with_stores(VecStore::new(), VecStore::new(), VecStore::new())
+        let heap = Heap::new_in_memory();
+        let entries = FixedVec::<Entry, _>::new(VecStore::new());
+        let capacity = entries.capacity();
+
+        Self {
+            heap,
+            entries,
+            capacity,
+            size: 0,
+            hasher: S::default(),
+            _marker: PhantomData,
+        }
     }
 }
 
@@ -441,23 +451,14 @@ where
 {
     pub fn new_in(path: &Path) -> io::Result<Self> {
         const DEFAULT_ENTRIES_CAP: usize = 16;
-        const DEFAULT_KV_CAP: usize = 1024;
 
-        let storage = MapStorage::new_in(
-            path,
-            DEFAULT_ENTRIES_CAP * std::mem::size_of::<Entry>(),
-            DEFAULT_KV_CAP,
-            DEFAULT_KV_CAP,
-        )?;
-
-        let keys = Buffers::new(storage.keys);
-        let values = Buffers::new(storage.values);
-        let entries = FixedVec::<Entry, _>::new(storage.entries);
+        let length_bytes = DEFAULT_ENTRIES_CAP * std::mem::size_of::<Entry>();
+        let heap = Heap::new(path.join("heap"))?;
+        let entries = FixedVec::<Entry, _>::new(MMapFile::new(path.join("entries"), length_bytes)?);
         let capacity = entries.capacity();
 
         Ok(Self {
-            keys,
-            values,
+            heap,
             entries,
             capacity,
             size: 0,
@@ -470,39 +471,27 @@ where
     pub fn with_capacity(
         path: impl AsRef<Path>,
         num_entries: usize,
-        keys_bytes: usize,
-        values_bytes: usize,
+        slots_per_slab: usize,
+        max_bytes: Option<usize>,
     ) -> io::Result<Self> {
         let path = path.as_ref();
 
         // Ensure none of the capacities are zero
-        if num_entries == 0 || keys_bytes == 0 || values_bytes == 0 {
+        if num_entries == 0 || slots_per_slab == 0 || max_bytes == Some(0) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "Capacities must be greater than zero",
             ));
         }
 
+        let length_bytes = num_entries * size_of::<Entry>();
         // Round up to nearest power of 2
-        let entries_cap = num_entries.next_power_of_two();
-        let keys_cap = keys_bytes.next_power_of_two();
-        let values_cap = values_bytes.next_power_of_two();
-
-        let storage = MapStorage::new_in(
-            path,
-            entries_cap * std::mem::size_of::<Entry>(),
-            keys_cap,
-            values_cap,
-        )?;
-
-        let keys = Buffers::new(storage.keys);
-        let values = Buffers::new(storage.values);
-        let entries = FixedVec::<Entry, _>::new(storage.entries);
+        let heap = Heap::new(path.join("heap"))?;
+        let entries = FixedVec::<Entry, _>::new(MMapFile::new(path.join("entries"), length_bytes)?);
         let capacity = entries.capacity();
 
         Ok(Self {
-            keys,
-            values,
+            heap,
             entries,
             capacity,
             size: 0,

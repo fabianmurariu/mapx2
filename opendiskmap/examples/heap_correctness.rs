@@ -1,4 +1,4 @@
-use opendiskmap::{Heap, Index};
+use opendiskmap::{Heap, HeapIdx};
 use rand::{Rng, SeedableRng, rngs::StdRng};
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
@@ -42,7 +42,7 @@ fn main() {
 
     let mut heap = Heap::new(&temp_dir).unwrap();
     let mut rng = StdRng::seed_from_u64(42);
-    let mut verification_map: HashMap<Index, (usize, u64)> = HashMap::new(); // Store index -> (original_size, hash)
+    let mut verification_map: HashMap<HeapIdx, (usize, u64)> = HashMap::new(); // Store index -> (original_size, hash)
 
     // To avoid storing 10M entries in memory, we'll sample every 100th item for verification
 

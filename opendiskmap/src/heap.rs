@@ -7,22 +7,23 @@ use modular_bitfield::prelude::*;
 
 use crate::byte_store::{ByteStore, MMapFile, VecStore};
 
-#[bitfield]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Index {
-    pub category: B4,
-    pub offset: B60,
+#[bitfield(bits = 62)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Zeroable, Pod, Specifier)]
+#[repr(C)]
+pub struct HeapIdx {
+    pub category: B8,
+    pub offset: B54,
 }
 
-impl From<Index> for u64 {
-    fn from(index: Index) -> u64 {
+impl From<HeapIdx> for u64 {
+    fn from(index: HeapIdx) -> u64 {
         u64::from_le_bytes(index.into_bytes())
     }
 }
 
-impl From<u64> for Index {
+impl From<u64> for HeapIdx {
     fn from(value: u64) -> Self {
-        Index::from_bytes(value.to_le_bytes())
+        HeapIdx::from_bytes(value.to_le_bytes())
     }
 }
 
@@ -182,14 +183,36 @@ impl Heap<MMapFile> {
         std::fs::create_dir_all(&base_path)?;
 
         let mut slabs = Vec::with_capacity(SLAB_SIZES.len());
+        for _ in &SLAB_SIZES {
+            slabs.push(None);
+        }
+
+        Ok(Self { slabs, base_path })
+    }
+
+    pub fn new_with_capacity<P: AsRef<Path>>(
+        base_path: P,
+        entries_per_slab: usize,
+        max_bytes: Option<usize>,
+    ) -> io::Result<Self> {
+        let base_path = base_path.as_ref().to_path_buf();
+        std::fs::create_dir_all(&base_path)?;
+
+        let path = &base_path;
+        let mut slabs = Vec::with_capacity(SLAB_SIZES.len());
+        let mut total = 0;
         for (i, size) in SLAB_SIZES.iter().enumerate() {
+            let length_bytes = METADATA_SIZE + (*size * entries_per_slab);
             slabs.push(Some(Slab::new(
-                MMapFile::new(
-                    base_path.join(format!("slab{i}.bin")),
-                    METADATA_SIZE + (16 * (*size)), // pre-allocate space for 1024 elements
-                )?,
+                MMapFile::new(path.join(format!("slab{i}.bin")), length_bytes)?,
                 *size,
             )));
+            total += length_bytes;
+            if let Some(max_bytes) = max_bytes
+                && total >= max_bytes
+            {
+                break;
+            }
         }
 
         Ok(Self { slabs, base_path })
@@ -233,18 +256,18 @@ impl<S: ByteStore> Heap<S>
 where
     Self: HeapOps<S>,
 {
-    pub fn append(&mut self, data: &[u8]) -> Index {
+    pub fn append(&mut self, data: &[u8]) -> HeapIdx {
         let category = self.find_size_category(data.len());
 
         let slab = self.get_or_create_slab(category);
         let offset = slab.append(data);
 
-        Index::new()
+        HeapIdx::new()
             .with_category(category as u8)
             .with_offset(offset)
     }
 
-    pub fn get(&self, index: Index) -> Option<&[u8]> {
+    pub fn get(&self, index: HeapIdx) -> Option<&[u8]> {
         let category = index.category() as usize;
         let offset = index.offset();
 
@@ -277,7 +300,7 @@ where
     }
 }
 
-trait HeapOps<S: ByteStore> {
+pub(crate) trait HeapOps<S: ByteStore> {
     fn get_or_create_slab(&mut self, category: usize) -> &mut Slab<S>;
 }
 
@@ -320,13 +343,15 @@ mod tests {
 
     #[test]
     fn test_index_bitfield() {
-        let index = Index::new().with_category(2).with_offset(0x123456789ABCDEF);
+        let index = HeapIdx::new()
+            .with_category(2)
+            .with_offset(0x123456789ABCDEF);
 
         assert_eq!(index.category(), 2);
         assert_eq!(index.offset(), 0x123456789ABCDEF);
 
         let as_u64: u64 = index.into();
-        let from_u64: Index = as_u64.into();
+        let from_u64: HeapIdx = as_u64.into();
 
         assert_eq!(index, from_u64);
     }
