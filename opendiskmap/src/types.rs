@@ -43,11 +43,9 @@ pub trait BytesEncode<'a> {
     type EItem: 'a + ?Sized;
 
     /// Encode an item into bytes
-    fn bytes_encode(item: &'a Self::EItem) -> Result<CowBytes<'a>>;
+    fn bytes_encode(item: &'a Self::EItem) -> Result<(Option<usize>, CowBytes<'a>)>;
 
-    fn eq_alt(l: &[u8], r: &[u8]) -> bool {
-        l == r
-    }
+    fn eq_alt(l: &[u8], r: &[u8]) -> bool;
 
     fn hash_alt<S: Hasher>(item: &[u8], s: &mut S) -> u64 {
         item.hash(s);
@@ -100,8 +98,8 @@ where
 {
     type EItem = T;
 
-    fn bytes_encode(item: &'a Self::EItem) -> Result<CowBytes<'a>> {
-        Ok(CowBytes::Borrowed(bytemuck::bytes_of(item)))
+    fn bytes_encode(item: &'a Self::EItem) -> Result<(Option<usize>, CowBytes<'a>)> {
+        Ok((None, CowBytes::Borrowed(bytemuck::bytes_of(item))))
     }
 
     fn eq_alt(l: &[u8], r: &[u8]) -> bool {
@@ -138,8 +136,15 @@ where
 impl<'a> BytesEncode<'a> for Str {
     type EItem = str;
 
-    fn bytes_encode(item: &'a Self::EItem) -> Result<CowBytes<'a>> {
-        Ok(CowBytes::Borrowed(item.as_bytes()))
+    fn bytes_encode(item: &'a Self::EItem) -> Result<(Option<usize>, CowBytes<'a>)> {
+        let bytes = item.as_bytes();
+        Ok((Some(bytes.len()), CowBytes::Borrowed(bytes)))
+    }
+
+    fn eq_alt(l: &[u8], r: &[u8]) -> bool {
+        let len_offset = size_of::<usize>();
+        let len = usize::from_le_bytes(r[0..len_offset].try_into().unwrap());
+        l == &r[len_offset..len_offset + len]
     }
 }
 
@@ -147,7 +152,10 @@ impl<'a> BytesDecode<'a> for Str {
     type DItem = &'a str;
 
     fn bytes_decode(bytes: &'a [u8]) -> Result<Self::DItem> {
-        std::str::from_utf8(bytes).map_err(|e| DiskMapError::Decoding(e.to_string()))
+        let len_offset = size_of::<usize>();
+        let len = usize::from_le_bytes(bytes[0..len_offset].try_into().unwrap());
+        let str_bytes = &bytes[len_offset..len_offset + len];
+        std::str::from_utf8(str_bytes).map_err(|e| DiskMapError::Decoding(e.to_string()))
     }
 }
 
@@ -155,8 +163,14 @@ impl<'a> BytesDecode<'a> for Str {
 impl<'a> BytesEncode<'a> for Bytes {
     type EItem = [u8];
 
-    fn bytes_encode(item: &'a Self::EItem) -> Result<CowBytes<'a>> {
-        Ok(CowBytes::Borrowed(item))
+    fn bytes_encode(item: &'a Self::EItem) -> Result<(Option<usize>, CowBytes<'a>)> {
+        Ok((Some(item.len()), CowBytes::Borrowed(item)))
+    }
+
+    fn eq_alt(l: &[u8], r: &[u8]) -> bool {
+        let len_offset = size_of::<usize>();
+        let len = usize::from_le_bytes(r[0..len_offset].try_into().unwrap());
+        l == &r[len_offset..len_offset + len]
     }
 }
 
@@ -164,7 +178,9 @@ impl<'a> BytesDecode<'a> for Bytes {
     type DItem = &'a [u8];
 
     fn bytes_decode(bytes: &'a [u8]) -> Result<Self::DItem> {
-        Ok(bytes)
+        let len_offset = size_of::<usize>();
+        let len = usize::from_le_bytes(bytes[0..len_offset].try_into().unwrap());
+        Ok(&bytes[len_offset..len_offset + len])
     }
 }
 

@@ -1,5 +1,5 @@
 use std::hash::BuildHasher;
-use std::io;
+use std::io::{self, Write};
 use std::marker::PhantomData;
 use std::path::Path;
 
@@ -10,9 +10,8 @@ use crate::entry::Entry;
 use crate::error::Result;
 use crate::fixed_buffers::FixedVec;
 use crate::heap::HeapOps;
-use crate::storage::MapStorage;
 use crate::types::{BytesDecode, BytesEncode, Native, Str};
-use crate::{Buffers, ByteStore, Heap};
+use crate::{ByteStore, Heap};
 
 // Type aliases for common use cases
 pub type U64StringMap<BS = VecStore> = DiskHashMap<Native<u64>, Str, BS>;
@@ -33,6 +32,7 @@ impl<K, V, BS, S> MapEntry<'_, K, V, BS, S>
 where
     BS: ByteStore,
     S: BuildHasher + Default,
+    Heap<BS>: HeapOps<BS>,
 {
     /// Returns true if the entry is occupied
     pub fn is_occupied(&self) -> bool {
@@ -73,7 +73,8 @@ where
     S: BuildHasher,
 {
     map: &'a mut DiskHashMap<K, V, BS, S>,
-    key: Vec<u8>,
+    key: Vec<u8>, // rethink this to be &[u8] with correct lifetime different from the map
+    key_len: Option<usize>,
     slot_idx: usize,
 }
 
@@ -203,23 +204,49 @@ where
         Err(self.capacity)
     }
 
-    // pub fn stats(&self) -> (u64, u64, u64) {
-    //     (
-    //         self.entries.store().stats(),
-    //         self.keys.store().stats(),
-    //         self.values.store().stats(),
-    //     )
-    // }
-
     /// Insert a new entry at the given slot index
-    fn insert_new_entry(&mut self, slot_idx: usize, key_bytes: &[u8], value_bytes: &[u8]) -> Entry {
-        let key_idx = self.heap.append(key_bytes);
-        let value_idx = self.heap.append(value_bytes);
+    fn insert_new_entry(
+        &mut self,
+        slot_idx: usize,
+        key_bytes: &[u8],
+        key_len: Option<usize>,
+        value_bytes: &[u8],
+        value_len: Option<usize>,
+    ) -> Result<Entry> {
+        let key_idx = if let Some(key_len) = key_len {
+            let mut page = self
+                .heap
+                .next_free_page(size_of::<usize>() + key_bytes.len());
+
+            page.write_with_len(key_len, key_bytes)?;
+            page.flush()?;
+            page.pos()
+        } else {
+            let mut page = self.heap.next_free_page(key_bytes.len());
+            page.write(key_bytes)?; // Store 0 length for empty key
+            page.flush()?;
+            page.pos()
+        };
+
+        let value_idx = if let Some(value_len) = value_len {
+            let mut page = self
+                .heap
+                .next_free_page(size_of::<usize>() + value_bytes.len());
+
+            page.write_with_len(value_len, value_bytes)?;
+            page.flush()?;
+            page.pos()
+        } else {
+            let mut page = self.heap.next_free_page(value_bytes.len());
+            page.write(value_bytes)?; // the decoder will work out the length, no need to track it
+            page.flush()?;
+            page.pos()
+        };
 
         let entry = Entry::occupied_at_pos(key_idx, value_idx);
         self.entries[slot_idx] = entry;
         self.size += 1;
-        entry
+        Ok(entry)
     }
 }
 
@@ -279,22 +306,24 @@ where
             self.grow()?;
         }
 
-        let key_bytes = K::bytes_encode(key)?;
-        let value_bytes = V::bytes_encode(value)?;
+        let (key_len, key_bytes) = K::bytes_encode(key)?;
+        let (value_len, value_bytes) = V::bytes_encode(value)?;
 
-        self.insert_key_value_bytes(&key_bytes, &value_bytes)
+        self.insert_key_value_bytes(&key_bytes, key_len, &value_bytes, value_len)
     }
 
     /// Common insertion logic for key-value pairs using raw bytes
     fn insert_key_value_bytes(
         &mut self,
         key_bytes: &[u8],
+        key_len: Option<usize>,
         value_bytes: &[u8],
+        value_len: Option<usize>,
     ) -> Result<Option<<V as BytesDecode<'_>>::DItem>> {
         match self.find_slot_inner(key_bytes) {
             Err(slot_idx) => {
                 // Found an empty slot, insert new key-value pair
-                self.insert_new_entry(slot_idx, key_bytes, value_bytes);
+                self.insert_new_entry(slot_idx, key_bytes, key_len, value_bytes, value_len)?;
                 Ok(None)
             }
             Ok(slot_idx) => {
@@ -375,7 +404,7 @@ where
             return Ok(None);
         }
 
-        let key_bytes = K::bytes_encode(key)?;
+        let (_, key_bytes) = K::bytes_encode(key)?;
         match self.find_slot_inner(&key_bytes) {
             Ok(slot_idx) => {
                 let entry = &self.entries[slot_idx];
@@ -398,12 +427,16 @@ where
         for<'b> K: BytesEncode<'b>,
         for<'b> V: BytesDecode<'b>,
     {
-        let key_bytes = K::bytes_encode(key)?;
-        Ok(self.entry_raw(key_bytes.as_ref()))
+        let (key_len, key_bytes) = K::bytes_encode(key)?;
+        Ok(self.entry_raw(key_len, key_bytes.as_ref()))
     }
 
     /// Get an entry for the given key, allowing for efficient insertion/access patterns
-    fn entry_raw<Q: AsRef<[u8]>>(&mut self, key: Q) -> MapEntry<'_, K, V, BS, S>
+    fn entry_raw<Q: AsRef<[u8]>>(
+        &mut self,
+        key_len: Option<usize>,
+        key: Q,
+    ) -> MapEntry<'_, K, V, BS, S>
     where
         for<'a> K: BytesEncode<'a>,
         for<'b> V: BytesDecode<'b>,
@@ -421,6 +454,7 @@ where
             Err(slot_idx) => MapEntry::Vacant(VacantEntry {
                 map: self,
                 key: key_bytes.to_vec(),
+                key_len,
                 slot_idx,
             }),
         }
@@ -501,11 +535,8 @@ where
     }
 
     pub fn load_from(path: &Path) -> io::Result<Self> {
-        let storage = MapStorage::load_from(path)?;
-
-        let keys = Buffers::load(storage.keys);
-        let values = Buffers::load(storage.values);
-        let entries = FixedVec::<Entry, _>::new(storage.entries);
+        let heap = Heap::load_from(path.join("heap"))?;
+        let entries = FixedVec::<Entry, _>::new(MMapFile::from_file(path.join("entries"))?);
         let capacity = entries.capacity();
 
         let mut size = 0;
@@ -516,8 +547,7 @@ where
         }
 
         Ok(Self {
-            keys,
-            values,
+            heap,
             entries,
             capacity,
             size,
@@ -531,12 +561,13 @@ impl<'a, K, V, BS, S> OccupiedEntry<'a, K, V, BS, S>
 where
     BS: ByteStore,
     S: BuildHasher + Default,
+    Heap<BS>: HeapOps<BS>,
 {
     /// Get a reference to the key in the entry
     pub fn key_bytes(&self) -> &[u8] {
         let entry = &self.map.entries[self.slot_idx];
         self.map
-            .keys
+            .heap
             .get(entry.key_pos())
             .expect("key must exist for occupied entry")
     }
@@ -545,7 +576,7 @@ where
     pub fn value_bytes(&self) -> &[u8] {
         let entry = &self.map.entries[self.slot_idx];
         self.map
-            .values
+            .heap
             .get(entry.value_pos())
             .expect("value must exist for occupied entry")
     }
@@ -558,6 +589,7 @@ where
     S: BuildHasher + Default,
     K: for<'b> BytesEncode<'b> + for<'b> BytesDecode<'b>,
     V: for<'b> BytesEncode<'b> + for<'b> BytesDecode<'b>,
+    Heap<BS>: HeapOps<BS>,
 {
     /// Get the value in the entry using the trait-based API
     pub fn get(&self) -> Result<<V as BytesDecode<'_>>::DItem> {
@@ -578,7 +610,7 @@ where
         self,
         value: &'a <V as BytesEncode<'a>>::EItem,
     ) -> Result<<V as BytesDecode<'a>>::DItem> {
-        let value_bytes = V::bytes_encode(value)?;
+        let (_, value_bytes) = V::bytes_encode(value)?;
         self.insert_bytes(value_bytes.as_ref())
     }
 
@@ -603,16 +635,22 @@ impl<'a, K, V, BS, S> VacantEntry<'a, K, V, BS, S>
 where
     BS: ByteStore,
     S: BuildHasher + Default,
+    Heap<BS>: HeapOps<BS>,
 {
     /// Insert the value into the vacant entry, returning a reference to the inserted value
-    fn insert_bytes<V2: AsRef<[u8]>>(self, value: V2) -> &'a [u8] {
-        let entry = self
+    fn insert_bytes<V2: AsRef<[u8]>>(self, len: Option<usize>, value: V2) -> Result<&'a [u8]> {
+        let entry = self.map.insert_new_entry(
+            self.slot_idx,
+            &self.key,
+            self.key_len,
+            value.as_ref(),
+            len,
+        )?;
+        Ok(self
             .map
-            .insert_new_entry(self.slot_idx, &self.key, value.as_ref());
-        self.map
-            .values
+            .heap
             .get(entry.value_pos())
-            .expect("value was just inserted")
+            .expect("value was just inserted"))
     }
 }
 
@@ -623,6 +661,7 @@ where
     S: BuildHasher + Default,
     K: for<'b> BytesEncode<'b>,
     V: for<'b> BytesEncode<'b> + for<'b> BytesDecode<'b>,
+    Heap<BS>: HeapOps<BS>,
 {
     /// Insert the value into the vacant entry using the trait-based API
     /// Returns the raw bytes since we can't return borrowed decoded value from a consuming method
@@ -630,8 +669,8 @@ where
         self,
         value: &'a <V as BytesEncode<'a>>::EItem,
     ) -> Result<<V as BytesDecode<'a>>::DItem> {
-        let value_bytes = V::bytes_encode(value)?;
-        let old_bytes = self.insert_bytes(value_bytes.as_ref());
+        let (value_len, value_bytes) = V::bytes_encode(value)?;
+        let old_bytes = self.insert_bytes(value_len, value_bytes.as_ref())?;
         V::bytes_decode(old_bytes)
     }
 
@@ -955,68 +994,68 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_no_resize_with_preallocation() {
-        let mut entry_store = VecStore::new();
-        entry_store.grow(256 * std::mem::size_of::<Entry>());
-        let mut key_store = VecStore::new();
-        key_store.grow(20 * 1024);
-        let mut value_store = VecStore::new();
-        value_store.grow(20 * 1024);
+    // #[test]
+    // fn test_no_resize_with_preallocation() {
+    //     let mut entry_store = VecStore::new();
+    //     entry_store.grow(256 * std::mem::size_of::<Entry>());
+    //     let mut key_store = VecStore::new();
+    //     key_store.grow(20 * 1024);
+    //     let mut value_store = VecStore::new();
+    //     value_store.grow(20 * 1024);
 
-        // The stores have been resized once to pre-allocate space.
-        assert_eq!(entry_store.stats(), 1);
-        assert_eq!(key_store.stats(), 1);
-        assert_eq!(value_store.stats(), 1);
+    //     // The stores have been resized once to pre-allocate space.
+    //     assert_eq!(entry_store.stats(), 1);
+    //     assert_eq!(key_store.stats(), 1);
+    //     assert_eq!(value_store.stats(), 1);
 
-        let mut map: DiskHashMap<Bytes, Bytes, _, FxBuildHasher> =
-            DiskHashMap::with_stores(entry_store, key_store, value_store);
+    //     let mut map: DiskHashMap<Bytes, Bytes, _, FxBuildHasher> =
+    //         DiskHashMap::with_stores(entry_store, key_store, value_store);
 
-        let initial_stats = map.stats();
-        assert_eq!(initial_stats, (1, 1, 1));
+    //     let initial_stats = map.stats();
+    //     assert_eq!(initial_stats, (1, 1, 1));
 
-        // Insert 100 elements. Should not trigger any more resizes.
-        for i in 0..100 {
-            let s = i.to_string();
-            map.insert(s.clone().into_bytes().as_slice(), s.into_bytes().as_slice())
-                .unwrap();
-        }
-        assert_eq!(
-            map.stats(),
-            initial_stats,
-            "No resize should happen with pre-allocation"
-        );
+    //     // Insert 100 elements. Should not trigger any more resizes.
+    //     for i in 0..100 {
+    //         let s = i.to_string();
+    //         map.insert(s.clone().into_bytes().as_slice(), s.into_bytes().as_slice())
+    //             .unwrap();
+    //     }
+    //     assert_eq!(
+    //         map.stats(),
+    //         initial_stats,
+    //         "No resize should happen with pre-allocation"
+    //     );
 
-        // Insert more elements to trigger a resize of the entries container.
-        for i in 100..150 {
-            let s = i.to_string();
-            map.insert(s.clone().into_bytes().as_slice(), s.into_bytes().as_slice())
-                .unwrap();
-        }
+    //     // Insert more elements to trigger a resize of the entries container.
+    //     for i in 100..150 {
+    //         let s = i.to_string();
+    //         map.insert(s.clone().into_bytes().as_slice(), s.into_bytes().as_slice())
+    //             .unwrap();
+    //     }
 
-        let (entries_resizes, keys_resizes, values_resizes) = map.stats();
-        assert_eq!(
-            entries_resizes, 0,
-            "entries store is replaced, so stats are reset"
-        );
-        assert_eq!(
-            keys_resizes, initial_stats.1,
-            "keys store should not resize"
-        );
-        assert_eq!(
-            values_resizes, initial_stats.2,
-            "values store should not resize"
-        );
-    }
+    //     let (entries_resizes, keys_resizes, values_resizes) = map.stats();
+    //     assert_eq!(
+    //         entries_resizes, 0,
+    //         "entries store is replaced, so stats are reset"
+    //     );
+    //     assert_eq!(
+    //         keys_resizes, initial_stats.1,
+    //         "keys store should not resize"
+    //     );
+    //     assert_eq!(
+    //         values_resizes, initial_stats.2,
+    //         "values store should not resize"
+    //     );
+    // }
 
     #[test]
     fn test_entry_api_vacant() {
         let mut map: BytesHM = DiskHashMap::new();
 
         // Test vacant entry insertion
-        match map.entry_raw(b"key1") {
+        match map.entry(b"key1").unwrap() {
             MapEntry::Vacant(entry) => {
-                let value_ref = entry.insert_bytes(b"value1");
+                let value_ref = entry.insert(b"value1").unwrap();
                 assert_eq!(value_ref, b"value1");
             }
             MapEntry::Occupied(_) => panic!("Expected vacant entry"),
@@ -1320,7 +1359,7 @@ mod tests {
 
         // Test with valid capacities
         let map_result: io::Result<DiskHashMap<Bytes, Bytes, MMapFile, FxBuildHasher>> =
-            DiskHashMap::with_capacity(tempdir.path(), 8, 512, 1024);
+            DiskHashMap::with_capacity(tempdir.path(), 8, 16, Some(4096));
         assert!(map_result.is_ok());
 
         let map = map_result.unwrap();
@@ -1342,7 +1381,7 @@ mod tests {
 
         // Test with non-power-of-2 capacities
         let map: DiskHashMap<Bytes, Bytes, MMapFile, FxBuildHasher> =
-            DiskHashMap::with_capacity(tempdir.path(), 15, 300, 700).unwrap();
+            DiskHashMap::with_capacity(tempdir.path(), 15, 32, Some(4096)).unwrap();
 
         // 15 -> 16 (next power of 2)
         assert_eq!(map.capacity(), 16);
@@ -1354,7 +1393,7 @@ mod tests {
 
         // Test zero num_entries
         let result: io::Result<DiskHashMap<Bytes, Bytes, MMapFile, FxBuildHasher>> =
-            DiskHashMap::with_capacity(tempdir.path().join("zero_entries"), 0, 512, 1024);
+            DiskHashMap::with_capacity(tempdir.path().join("zero_entries"), 0, 512, Some(1024));
         assert!(result.is_err());
         if let Err(err) = result {
             assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
@@ -1362,7 +1401,7 @@ mod tests {
 
         // Test zero keys_bytes
         let result: io::Result<DiskHashMap<Bytes, Bytes, MMapFile, FxBuildHasher>> =
-            DiskHashMap::with_capacity(tempdir.path().join("zero_keys"), 8, 0, 1024);
+            DiskHashMap::with_capacity(tempdir.path().join("zero_keys"), 8, 0, Some(1024));
         assert!(result.is_err());
         if let Err(err) = result {
             assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
@@ -1370,7 +1409,7 @@ mod tests {
 
         // Test zero values_bytes
         let result: io::Result<DiskHashMap<Bytes, Bytes, MMapFile, FxBuildHasher>> =
-            DiskHashMap::with_capacity(tempdir.path().join("zero_values"), 8, 512, 0);
+            DiskHashMap::with_capacity(tempdir.path().join("zero_values"), 8, 512, Some(0));
         assert!(result.is_err());
         if let Err(err) = result {
             assert_eq!(err.kind(), io::ErrorKind::InvalidInput);

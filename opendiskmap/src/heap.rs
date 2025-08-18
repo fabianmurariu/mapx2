@@ -1,4 +1,4 @@
-use std::io;
+use std::io::{self, Write};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
@@ -139,6 +139,28 @@ impl<S: ByteStore> Slab<S> {
         result
     }
 
+    fn next_free_page(&mut self, size_category: u8, len: usize) -> PageEntry<S> {
+        let pos_range = self.resolve_pos(self.count);
+        let required_capacity = pos_range.end;
+
+        if self.store.as_ref().len() < required_capacity {
+            let additional = required_capacity - self.store.as_ref().len();
+            self.store.grow(additional);
+        }
+
+        assert!(
+            len <= pos_range.len() && len <= self.element_size,
+            "Internal ERROR, Data too large for slab element size!"
+        );
+
+        PageEntry {
+            slab: self,
+            range: pos_range,
+            category: size_category,
+            pos: -1, // Not flushed yet
+        }
+    }
+
     pub fn get(&self, offset: u64) -> Option<&[u8]> {
         let offset = offset as usize;
         if offset >= self.count {
@@ -155,6 +177,66 @@ impl<S: ByteStore> Slab<S> {
 
     pub fn is_empty(&self) -> bool {
         self.count == 0
+    }
+}
+
+pub struct PageEntry<'a, S: ByteStore> {
+    slab: &'a mut Slab<S>,
+    range: Range<usize>,
+    category: u8,
+    pos: i64,
+}
+
+impl<'a, S: ByteStore> PageEntry<'a, S> {
+    pub fn page_mut(&mut self) -> &mut [u8] {
+        &mut self.slab.store.as_mut()[self.range.clone()]
+    }
+
+    pub fn pos(&self) -> HeapIdx {
+        let pos = self
+            .pos
+            .try_into()
+            .unwrap_or_else(|_| panic!("tried to read negative pos!"));
+        HeapIdx::new().with_category(self.category).with_offset(pos)
+    }
+}
+
+impl<S: ByteStore> PageEntry<'_, S> {
+    pub(crate) fn write_with_len(&mut self, len: usize, buf: &[u8]) -> io::Result<()> {
+        let page = self.page_mut();
+        let len_bytes = &usize::to_le_bytes(len);
+        assert!(page.len() >= len_bytes.len() + buf.len());
+        let mut cursor = io::Cursor::new(page);
+        cursor.write_all(len_bytes);
+        cursor.write_all(buf)?;
+        Ok(())
+    }
+
+    pub(crate) fn write(&mut self, buf: &[u8]) -> io::Result<()> {
+        let page = self.page_mut();
+        assert!(page.len() >= buf.len());
+        let mut cursor = io::Cursor::new(page);
+        cursor.write_all(buf)?;
+        Ok(())
+    }
+
+    pub(crate) fn flush(&mut self) -> io::Result<()> {
+        let result = self.slab.count as u64;
+        self.slab.count += 1;
+        self.slab.update_metadata();
+        self.pos = result as i64;
+        Ok(())
+    }
+}
+
+impl<S: ByteStore> Drop for PageEntry<'_, S> {
+    fn drop(&mut self) {
+        if self.pos < 0 {
+            self.flush().unwrap_or_else(|e| {
+                // If flush fails, we should panic or log an error
+                panic!("Failed to flush PageEntry: {e}");
+            });
+        }
     }
 }
 
@@ -267,6 +349,17 @@ where
             .with_offset(offset)
     }
 
+    pub fn next_free_page(&mut self, size: usize) -> PageEntry<S> {
+        let category = self.find_size_category(size);
+        let slab = self.get_or_create_slab(category);
+        slab.next_free_page(
+            category
+                .try_into()
+                .unwrap_or_else(|_| panic!("Internal error, category larger than 255")),
+            size,
+        )
+    }
+
     pub fn get(&self, index: HeapIdx) -> Option<&[u8]> {
         let category = index.category() as usize;
         let offset = index.offset();
@@ -300,7 +393,7 @@ where
     }
 }
 
-pub(crate) trait HeapOps<S: ByteStore> {
+pub trait HeapOps<S: ByteStore> {
     fn get_or_create_slab(&mut self, category: usize) -> &mut Slab<S>;
 }
 
