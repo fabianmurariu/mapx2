@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 use bytemuck::{Pod, Zeroable};
-use modular_bitfield::prelude::{B2, B62};
+use modular_bitfield::prelude::B2;
 use modular_bitfield::{Specifier, bitfield};
 
 use crate::HeapIdx;
@@ -16,7 +16,7 @@ pub enum Status {
 #[bitfield(bits = 4)]
 #[derive(Clone, Copy, Zeroable, Pod, Debug, Specifier)]
 #[repr(C)]
-struct PaddedStatus {
+pub struct PaddedStatus {
     #[bits = 2]
     status: Status,
     #[bits = 2]

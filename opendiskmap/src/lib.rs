@@ -5,7 +5,7 @@ pub mod entry;
 pub mod error;
 mod fixed_buffers;
 pub mod heap;
-mod storage;
+// mod storage;
 pub mod types;
 pub use buffers::Buffers;
 pub use byte_store::{ByteStore, MMapFile, VecStore};

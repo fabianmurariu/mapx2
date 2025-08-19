@@ -53,6 +53,7 @@ struct SlabMetadata {
     count: u64,
 }
 
+#[derive(Debug)]
 pub struct Slab<S: ByteStore> {
     store: S,
     element_size: usize,
@@ -207,7 +208,7 @@ impl<S: ByteStore> PageEntry<'_, S> {
         let len_bytes = &usize::to_le_bytes(len);
         assert!(page.len() >= len_bytes.len() + buf.len());
         let mut cursor = io::Cursor::new(page);
-        cursor.write_all(len_bytes);
+        cursor.write_all(len_bytes)?;
         cursor.write_all(buf)?;
         Ok(())
     }
@@ -240,6 +241,7 @@ impl<S: ByteStore> Drop for PageEntry<'_, S> {
     }
 }
 
+#[derive(Debug)]
 pub struct Heap<S: ByteStore> {
     slabs: Vec<Option<Slab<S>>>,
     base_path: PathBuf,

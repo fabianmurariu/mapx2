@@ -59,6 +59,8 @@ pub trait BytesDecode<'a> {
 
     /// Decode bytes into an item
     fn bytes_decode(bytes: &'a [u8]) -> Result<Self::DItem>;
+
+    fn bytes_actual(bytes: &'a [u8]) -> &'a [u8];
 }
 
 /// Wrapper for native types that can be represented as bytes (numbers, etc.)
@@ -130,6 +132,10 @@ where
         }
         Ok(*bytemuck::from_bytes(bytes))
     }
+
+    fn bytes_actual(bytes: &'a [u8]) -> &'a [u8] {
+        bytes
+    }
 }
 
 // Implementations for Str
@@ -152,10 +158,14 @@ impl<'a> BytesDecode<'a> for Str {
     type DItem = &'a str;
 
     fn bytes_decode(bytes: &'a [u8]) -> Result<Self::DItem> {
+        let str_bytes = Self::bytes_actual(bytes);
+        std::str::from_utf8(str_bytes).map_err(|e| DiskMapError::Decoding(e.to_string()))
+    }
+
+    fn bytes_actual(bytes: &'a [u8]) -> &'a [u8] {
         let len_offset = size_of::<usize>();
         let len = usize::from_le_bytes(bytes[0..len_offset].try_into().unwrap());
-        let str_bytes = &bytes[len_offset..len_offset + len];
-        std::str::from_utf8(str_bytes).map_err(|e| DiskMapError::Decoding(e.to_string()))
+        &bytes[len_offset..len_offset + len]
     }
 }
 
@@ -170,7 +180,8 @@ impl<'a> BytesEncode<'a> for Bytes {
     fn eq_alt(l: &[u8], r: &[u8]) -> bool {
         let len_offset = size_of::<usize>();
         let len = usize::from_le_bytes(r[0..len_offset].try_into().unwrap());
-        l == &r[len_offset..len_offset + len]
+        let r = &r[len_offset..len_offset + len];
+        l == r
     }
 }
 
@@ -178,9 +189,13 @@ impl<'a> BytesDecode<'a> for Bytes {
     type DItem = &'a [u8];
 
     fn bytes_decode(bytes: &'a [u8]) -> Result<Self::DItem> {
+        Ok(Self::bytes_actual(bytes))
+    }
+
+    fn bytes_actual(bytes: &'a [u8]) -> &'a [u8] {
         let len_offset = size_of::<usize>();
         let len = usize::from_le_bytes(bytes[0..len_offset].try_into().unwrap());
-        Ok(&bytes[len_offset..len_offset + len])
+        &bytes[len_offset..len_offset + len]
     }
 }
 

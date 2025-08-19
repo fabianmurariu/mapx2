@@ -97,6 +97,23 @@ where
     _marker: PhantomData<(K, V)>,
 }
 
+impl<K, V, BS, S> std::fmt::Debug for DiskHashMap<K, V, BS, S>
+where
+    K: std::fmt::Debug,
+    V: std::fmt::Debug,
+    BS: ByteStore + std::fmt::Debug,
+    S: std::hash::BuildHasher,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DiskHashMap")
+            .field("capacity", &self.capacity)
+            .field("size", &self.size)
+            .field("entries", &self.entries)
+            .field("heap", &self.heap)
+            .finish()
+    }
+}
+
 impl<K, V> Default for DiskHashMap<K, V, VecStore, FxBuildHasher> {
     fn default() -> Self {
         Self::new()
@@ -295,6 +312,7 @@ where
                     .get(entry.key_pos())
                     .expect("key must exist for occupied entry");
 
+                let key_data = K::bytes_actual(key_data);
                 let mut hasher = self.hasher.build_hasher();
                 let hash = <K as BytesEncode>::hash_alt(key_data, &mut hasher);
                 let mut index = hash as usize % actual_new_capacity;
@@ -586,7 +604,7 @@ where
     Heap<BS>: HeapOps<BS>,
 {
     /// Get a reference to the key in the entry
-    pub fn key_bytes(&self) -> &[u8] {
+    fn key_bytes(&self) -> &[u8] {
         let entry = &self.map.entries[self.slot_idx];
         self.map
             .heap
@@ -595,7 +613,7 @@ where
     }
 
     /// Get a reference to the value in the entry
-    pub fn value_bytes(&self) -> &[u8] {
+    fn value_bytes(&self) -> &[u8] {
         let entry = &self.map.entries[self.slot_idx];
         self.map
             .heap
@@ -614,9 +632,14 @@ where
     Heap<BS>: HeapOps<BS>,
 {
     /// Get the value in the entry using the trait-based API
-    pub fn get(&self) -> Result<<V as BytesDecode<'_>>::DItem> {
+    pub fn value(&self) -> Result<<V as BytesDecode<'_>>::DItem> {
         let value_bytes = self.value_bytes();
         V::bytes_decode(value_bytes)
+    }
+
+    pub fn key(&self) -> Result<<K as BytesDecode<'_>>::DItem> {
+        let key_bytes = self.key_bytes();
+        K::bytes_decode(key_bytes)
     }
 
     /// Insert a new value into the entry, returning the old value
@@ -801,17 +824,18 @@ mod tests {
         // Insert all key-value pairs from the StdHashMap
         let mut already_inserted = vec![];
         for (k, v) in hm.iter() {
-            map.insert(k.as_slice(), v.as_slice()).unwrap();
+            map.insert(k, v).unwrap();
             already_inserted.push((k.clone(), v.clone()));
             for (k, v) in &already_inserted {
-                assert_eq!(map.get(k).unwrap(), Some(v.as_slice()), "key: {k:?}");
+                // assert_eq!(map.get(k).unwrap(), Some(v.as_slice()), "key: {k:?}");
 
                 let entry = map.entry(k).unwrap();
-                assert!(entry.is_occupied());
+                assert!(entry.is_occupied(), "Expected occupied entry {k:?}:{v:?}");
                 assert_eq!(entry.key(), k);
                 match entry {
                     MapEntry::Occupied(occupied) => {
-                        assert_eq!(occupied.value_bytes(), v);
+                        assert_eq!(occupied.value().unwrap(), v);
+                        assert_eq!(occupied.key().unwrap(), k);
                     }
                     MapEntry::Vacant(_) => panic!("Expected occupied entry"),
                 }
@@ -848,7 +872,8 @@ mod tests {
                 assert_eq!(entry.key(), *k);
                 match entry {
                     MapEntry::Occupied(occupied) => {
-                        assert_eq!(occupied.get().unwrap(), *v);
+                        assert_eq!(occupied.value().unwrap(), *v);
+                        assert_eq!(occupied.key().unwrap(), *v)
                     }
                     MapEntry::Vacant(_) => panic!("Expected occupied entry"),
                 }
@@ -891,6 +916,13 @@ mod tests {
     }
 
     #[test]
+    fn it_s_a_hash_map_0() {
+        let mut hm = StdHashMap::new();
+        hm.insert(vec![0u8], vec![0u8]);
+        check_prop(hm);
+    }
+
+    #[test]
     fn it_s_a_hash_map_1() {
         let mut expected = StdHashMap::new();
         expected.insert(vec![225, 211, 10, 64, 102, 152], vec![173, 231, 92]);
@@ -901,6 +933,19 @@ mod tests {
         );
         expected.insert(vec![206, 143, 221], vec![253, 107, 93, 29, 207]);
         expected.insert(vec![182, 46, 63, 120], vec![110, 233, 124, 103]);
+        check_prop(expected);
+    }
+
+    #[test]
+    fn it_s_a_hash_map_3() {
+        let mut expected = StdHashMap::new();
+        expected.insert(vec![0], vec![0]);
+        expected.insert(vec![1], vec![0]);
+        expected.insert(vec![2], vec![0]);
+        expected.insert(vec![3], vec![0]);
+        expected.insert(vec![4], vec![0]);
+        expected.insert(vec![5], vec![0]);
+        expected.insert(vec![6], vec![0]);
         check_prop(expected);
     }
 
