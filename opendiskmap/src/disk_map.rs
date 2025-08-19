@@ -1,5 +1,5 @@
 use std::hash::BuildHasher;
-use std::io::{self, Write};
+use std::io;
 use std::marker::PhantomData;
 use std::path::Path;
 
@@ -213,6 +213,21 @@ where
         value_bytes: &[u8],
         value_len: Option<usize>,
     ) -> Result<Entry> {
+        let key_idx = self.insert_key_into_heap(key_bytes, key_len)?;
+
+        let value_idx = self.insert_value_into_heap(value_bytes, value_len)?;
+
+        let entry = Entry::occupied_at_pos(key_idx, value_idx);
+        self.entries[slot_idx] = entry;
+        self.size += 1;
+        Ok(entry)
+    }
+
+    fn insert_key_into_heap(
+        &mut self,
+        key_bytes: &[u8],
+        key_len: Option<usize>,
+    ) -> Result<crate::HeapIdx> {
         let key_idx = if let Some(key_len) = key_len {
             let mut page = self
                 .heap
@@ -227,7 +242,14 @@ where
             page.flush()?;
             page.pos()
         };
+        Ok(key_idx)
+    }
 
+    fn insert_value_into_heap(
+        &mut self,
+        value_bytes: &[u8],
+        value_len: Option<usize>,
+    ) -> Result<crate::HeapIdx> {
         let value_idx = if let Some(value_len) = value_len {
             let mut page = self
                 .heap
@@ -242,11 +264,7 @@ where
             page.flush()?;
             page.pos()
         };
-
-        let entry = Entry::occupied_at_pos(key_idx, value_idx);
-        self.entries[slot_idx] = entry;
-        self.size += 1;
-        Ok(entry)
+        Ok(value_idx)
     }
 }
 
@@ -328,7 +346,7 @@ where
             }
             Ok(slot_idx) => {
                 // Key already exists, update value
-                self.update_existing_entry(slot_idx, value_bytes)
+                self.update_existing_entry(slot_idx, value_bytes, value_len)
             }
         }
     }
@@ -338,11 +356,15 @@ where
         &mut self,
         slot_idx: usize,
         value_bytes: &[u8],
+        value_len: Option<usize>,
     ) -> Result<Option<<V as BytesDecode<'_>>::DItem>> {
-        let entry = &mut self.entries[slot_idx];
-        let old_value_idx = entry.value_pos();
-        let new_value_idx = self.heap.append(value_bytes);
-        entry.set_new_kv(entry.key_pos(), new_value_idx);
+        let new_value_idx = self.insert_value_into_heap(value_bytes, value_len)?;
+        let old_value_idx = {
+            let entry = &mut self.entries[slot_idx];
+            let old_value_idx = entry.value_pos();
+            entry.set_new_kv(entry.key_pos(), new_value_idx);
+            old_value_idx
+        };
 
         // Get the old value after the mutation
         let old_value_bytes = self
@@ -598,9 +620,13 @@ where
     }
 
     /// Insert a new value into the entry, returning the old value
-    fn insert_bytes<V2: AsRef<[u8]>>(self, value: V2) -> Result<<V as BytesDecode<'a>>::DItem> {
+    fn insert_bytes<V2: AsRef<[u8]>>(
+        self,
+        len: Option<usize>,
+        value: V2,
+    ) -> Result<<V as BytesDecode<'a>>::DItem> {
         self.map
-            .update_existing_entry(self.slot_idx, value.as_ref())
+            .update_existing_entry(self.slot_idx, value.as_ref(), len)
             .map(|r| r.unwrap())
     }
 
@@ -610,8 +636,8 @@ where
         self,
         value: &'a <V as BytesEncode<'a>>::EItem,
     ) -> Result<<V as BytesDecode<'a>>::DItem> {
-        let (_, value_bytes) = V::bytes_encode(value)?;
-        self.insert_bytes(value_bytes.as_ref())
+        let (value_len, value_bytes) = V::bytes_encode(value)?;
+        self.insert_bytes(value_len, value_bytes.as_ref())
     }
 
     /// Insert the value into the vacant entry using trait-based API if vacant
