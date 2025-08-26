@@ -7,7 +7,8 @@ pub mod refs;
 
 use crossbeam_utils::CachePadded;
 use opendiskmap::{
-    ByteStore, DiskHashMap as OpenDiskHM, MMapFile, Result,
+    ByteStore, DiskHashMap as OpenDiskHM, Heap, MMapFile, Result,
+    heap::HeapOps,
     types::{BytesDecode, BytesEncode},
 };
 use parking_lot::RwLock;
@@ -62,12 +63,12 @@ where
     /// the num_keys, key_capacity, and values_capacity parameters are per each shard
     pub fn new_with_capacity<P: AsRef<Path>>(
         dir: P,
-        num_keys: usize,
-        keys_capacity: usize,
-        values_capacity: usize,
+        num_entries: usize,
+        slots_per_slab: usize,
+        max_size: Option<usize>,
     ) -> io::Result<Self> {
         Self::with_hasher_and_shards_in(dir, FxBuildHasher, default_shard_amount(), |path| {
-            OpenDiskHM::with_capacity(path, num_keys, keys_capacity, values_capacity)
+            OpenDiskHM::with_capacity(path, num_entries, slots_per_slab, max_size)
         })
     }
 }
@@ -179,6 +180,7 @@ where
     S: BuildHasher,
     K: for<'a> BytesEncode<'a> + for<'a> BytesDecode<'a>,
     V: for<'a> BytesEncode<'a> + for<'a> BytesDecode<'a>,
+    Heap<BS>: HeapOps<BS>,
 {
     pub fn shards(&self) -> &[Shard<K, V, BS, S>] {
         &self.shards
@@ -188,7 +190,7 @@ where
     /// Uses a different hash calculation than the individual shard's find_slot to ensure
     /// better distribution and avoid hash collisions between shard selection and slot selection.
     fn shard_for_key<'a>(&self, key: &'a <K as BytesEncode<'a>>::EItem) -> Result<usize> {
-        let key_bytes = K::bytes_encode(key)?;
+        let (_, key_bytes) = K::bytes_encode(key)?;
         let mut hasher = self.hasher.build_hasher();
         let base_hash = K::hash_alt(&key_bytes, &mut hasher);
 

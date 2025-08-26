@@ -560,7 +560,7 @@ where
 
         let length_bytes = num_entries * size_of::<Entry>();
         // Round up to nearest power of 2
-        let heap = Heap::new(path.join("heap"))?;
+        let heap = Heap::new_with_capacity(path.join("heap"), slots_per_slab, max_bytes)?;
         let entries = FixedVec::<Entry, _>::new(MMapFile::new(path.join("entries"), length_bytes)?);
         let capacity = entries.capacity();
 
@@ -873,7 +873,7 @@ mod tests {
                 match entry {
                     MapEntry::Occupied(occupied) => {
                         assert_eq!(occupied.value().unwrap(), *v);
-                        assert_eq!(occupied.key().unwrap(), *v)
+                        assert_eq!(occupied.key().unwrap(), *k)
                     }
                     MapEntry::Vacant(_) => panic!("Expected occupied entry"),
                 }
@@ -913,6 +913,13 @@ mod tests {
         proptest!(|(values in small_hash_map_prop)|{
             check_prop_native(values);
         });
+    }
+
+    #[test]
+    fn it_s_a_hash_map_native_0() {
+        let mut hm = StdHashMap::new();
+        hm.insert(0u64, 1u64);
+        check_prop_native(hm);
     }
 
     #[test]
@@ -1146,7 +1153,7 @@ mod tests {
         // Test occupied entry access and update
         match map.entry(b"key1").unwrap() {
             MapEntry::Occupied(entry) => {
-                assert_eq!(entry.value_bytes(), b"value1");
+                assert_eq!(entry.value().unwrap(), b"value1");
                 let old_value = entry.insert(b"value2").unwrap();
                 assert_eq!(old_value, b"value1");
             }
@@ -1255,7 +1262,7 @@ mod tests {
 
         // Verify both values
         let result = map.get(&key1);
-        assert!(result.is_ok());
+        assert!(result.is_ok(), "Failed to get key1 {result:?}");
         assert_eq!(result.unwrap(), Some(100u32));
 
         let result = map.get(&key2);

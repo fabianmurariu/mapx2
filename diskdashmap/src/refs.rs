@@ -1,6 +1,6 @@
 use std::hash::BuildHasher;
 
-use opendiskmap::{ByteStore, BytesDecode, BytesEncode, Result, entry::Entry};
+use opendiskmap::{ByteStore, BytesDecode, BytesEncode, Heap, Result, entry::Entry, heap::HeapOps};
 use parking_lot::RwLockReadGuard;
 
 pub struct Ref<'a, K, V, BS: ByteStore, S: BuildHasher>
@@ -20,6 +20,7 @@ where
     V: for<'b> BytesEncode<'b> + for<'b> BytesDecode<'b>,
     BS: ByteStore,
     S: BuildHasher,
+    Heap<BS>: HeapOps<BS>,
 {
     pub fn new_from_key(
         key: &'a <K as BytesEncode<'a>>::EItem,

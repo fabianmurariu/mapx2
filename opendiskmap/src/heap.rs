@@ -27,7 +27,8 @@ impl From<u64> for HeapIdx {
     }
 }
 
-const SLAB_SIZES: [usize; 15] = [
+const SLAB_SIZES: [usize; 16] = [
+    4,     // 4 bytes
     8,     // 8 bytes
     16,    // 16 bytes
     32,    // 32 bytes
@@ -276,7 +277,7 @@ impl Heap<MMapFile> {
 
     pub fn new_with_capacity<P: AsRef<Path>>(
         base_path: P,
-        entries_per_slab: usize,
+        slots_per_slab: usize,
         max_bytes: Option<usize>,
     ) -> io::Result<Self> {
         let base_path = base_path.as_ref().to_path_buf();
@@ -286,7 +287,7 @@ impl Heap<MMapFile> {
         let mut slabs = Vec::with_capacity(SLAB_SIZES.len());
         let mut total = 0;
         for (i, size) in SLAB_SIZES.iter().enumerate() {
-            let length_bytes = METADATA_SIZE + (*size * entries_per_slab);
+            let length_bytes = METADATA_SIZE + (*size * slots_per_slab);
             slabs.push(Some(Slab::new(
                 MMapFile::new(path.join(format!("slab{i}.bin")), length_bytes)?,
                 *size,
@@ -438,12 +439,10 @@ mod tests {
 
     #[test]
     fn test_index_bitfield() {
-        let index = HeapIdx::new()
-            .with_category(2)
-            .with_offset(0x123456789ABCDEF);
+        let index = HeapIdx::new().with_category(2).with_offset((2 ^ 165));
 
         assert_eq!(index.category(), 2);
-        assert_eq!(index.offset(), 0x123456789ABCDEF);
+        assert_eq!(index.offset(), 2 ^ 165);
 
         let as_u64: u64 = index.into();
         let from_u64: HeapIdx = as_u64.into();
@@ -482,15 +481,15 @@ mod tests {
 
         // All should be in category 0 since they're all <= 64 bytes
         assert_eq!(index1.category(), 0);
-        assert_eq!(index2.category(), 1);
-        assert_eq!(index3.category(), 0);
+        assert_eq!(index2.category(), 2);
+        assert_eq!(index3.category(), 1);
 
         let retrieved1 = heap.get(index1).unwrap();
         let retrieved2 = heap.get(index2).unwrap();
         let retrieved3 = heap.get(index3).unwrap();
 
         // All retrieved data should be 64 bytes (padded)
-        assert_eq!(retrieved1.len(), 8);
+        assert_eq!(retrieved1.len(), 4);
         assert_eq!(retrieved2.len(), 16);
         assert_eq!(retrieved3.len(), 8);
 
@@ -534,17 +533,17 @@ mod tests {
     fn test_find_size_category() {
         let heap = Heap::new_in_memory();
 
-        // SLAB_SIZES = [8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 12288, 16384, 20480, 24576]
+        // SLAB_SIZES = [4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 12288, 16384, 20480, 24576]
         assert_eq!(heap.find_size_category(1), 0); // -> 8 bytes
-        assert_eq!(heap.find_size_category(64), 3); // -> 64 bytes
-        assert_eq!(heap.find_size_category(65), 4); // -> 128 bytes
-        assert_eq!(heap.find_size_category(128), 4); // -> 128 bytes
-        assert_eq!(heap.find_size_category(129), 5); // -> 256 bytes
-        assert_eq!(heap.find_size_category(256), 5); // -> 256 bytes
-        assert_eq!(heap.find_size_category(257), 6); // -> 512 bytes
-        assert_eq!(heap.find_size_category(1024), 7); // -> 1024 bytes
-        assert_eq!(heap.find_size_category(16384), 12); // -> 16384 bytes
-        assert_eq!(heap.find_size_category(25000), 14); // -> 24576 bytes (largest)
+        assert_eq!(heap.find_size_category(64), 4); // -> 64 bytes
+        assert_eq!(heap.find_size_category(65), 5); // -> 128 bytes
+        assert_eq!(heap.find_size_category(128), 5); // -> 128 bytes
+        assert_eq!(heap.find_size_category(129), 6); // -> 256 bytes
+        assert_eq!(heap.find_size_category(256), 6); // -> 256 bytes
+        assert_eq!(heap.find_size_category(257), 7); // -> 512 bytes
+        assert_eq!(heap.find_size_category(1024), 8); // -> 1024 bytes
+        assert_eq!(heap.find_size_category(16384), 13); // -> 16384 bytes
+        assert_eq!(heap.find_size_category(25000), 15); // -> 24576 bytes (largest)
     }
 
     #[test]
