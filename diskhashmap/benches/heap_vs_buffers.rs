@@ -1,5 +1,5 @@
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
-use opendiskmap::{Buffers, Heap, VecStore};
+use diskhashmap::{Buffers, Heap, VecStore};
 use rand::{Rng, SeedableRng, rngs::StdRng};
 
 fn generate_random_data(count: usize, min_size: usize, max_size: usize, seed: u64) -> Vec<Vec<u8>> {

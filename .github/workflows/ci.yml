@@ -51,8 +51,8 @@ jobs:
       - name: Run tests
         run: cargo test --verbose --all-features
 
-      - name: Run tests (opendiskmap)
-        run: cargo test -p opendiskmap --verbose
+      - name: Run tests (diskhashmap)
+        run: cargo test -p diskhashmap --verbose
 
       - name: Run tests (diskdashmap)
         run: cargo test -p diskdashmap --verbose
@@ -79,8 +79,8 @@ jobs:
   #       run: |
   #         cargo miri setup
   #         # Run a subset of tests with Miri (memory-mapped files might not work)
-  #         cargo miri test -p opendiskmap --lib buffers::tests::test_basic_operations_vec_backend
-  #         cargo miri test -p opendiskmap --lib buffers::tests::test_load
+  #         cargo miri test -p diskhashmap --lib buffers::tests::test_basic_operations_vec_backend
+  #         cargo miri test -p diskhashmap --lib buffers::tests::test_load
 
   minimum-rust-version:
     name: Minimum Rust Version

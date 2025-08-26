@@ -1,5 +1,5 @@
-use opendiskmap::Buffers;
-use opendiskmap::byte_store::VecStore;
+use diskhashmap::Buffers;
+use diskhashmap::byte_store::VecStore;
 use std::collections::HashMap;
 
 fn main() {

@@ -1,5 +1,5 @@
 [workspace]
-members = ["opendiskmap", "diskdashmap"]
+members = ["diskhashmap", "diskdashmap"]
 resolver = "3"
 
 [workspace.package]
@@ -9,7 +9,7 @@ license = "Apache-2.0"
 authors = ["Fabian Murariu <fabian.murariu@gmail.com>"]
 repository = "https://github.com/fabianmurariu/mapx2"
 homepage = "https://github.com/fabianmurariu/mapx2"
-documentation = "https://docs.rs/opendiskmap"
+documentation = "https://docs.rs/diskhashmap"
 description = "High-performance disk-backed hash maps for Rust"
 readme = "Readme.MD"
 keywords = ["hashmap", "disk", "storage", "mmap", "database"]

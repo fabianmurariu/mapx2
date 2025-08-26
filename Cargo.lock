@@ -262,13 +262,31 @@ name = "diskdashmap"
 version = "0.1.0"
 dependencies = [
  "crossbeam-utils",
- "opendiskmap",
+ "diskhashmap",
  "parking_lot 0.12.4",
  "proptest",
  "rand",
  "rand_chacha",
  "rayon",
  "rustc-hash",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
+name = "diskhashmap"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "criterion",
+ "memmap2",
+ "modular-bitfield",
+ "paste",
+ "proptest",
+ "rand",
+ "rkyv",
+ "rustc-hash",
+ "sled",
  "tempfile",
  "thiserror",
 ]
@@ -525,24 +543,6 @@ name = "oorandom"
 version = "11.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6790f58c7ff633d8771f42965289203411a5e5c68388703c06e14f24770b41e"
-
-[[package]]
-name = "opendiskmap"
-version = "0.1.0"
-dependencies = [
- "bytemuck",
- "criterion",
- "memmap2",
- "modular-bitfield",
- "paste",
- "proptest",
- "rand",
- "rkyv",
- "rustc-hash",
- "sled",
- "tempfile",
- "thiserror",
-]
 
 [[package]]
 name = "parking_lot"

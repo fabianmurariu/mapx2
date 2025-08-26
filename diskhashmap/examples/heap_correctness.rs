@@ -1,8 +1,9 @@
-use opendiskmap::{Heap, HeapIdx};
+use diskhashmap::{Heap, HeapIdx};
 use rand::{Rng, SeedableRng, rngs::StdRng};
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::path::PathBuf;
 use std::time::Instant;
 
 fn generate_random_data_chunk(
@@ -24,38 +25,66 @@ fn generate_random_data_chunk(
 }
 
 fn main() {
-    println!("Heap Correctness Test: Small scale test with 10,000 items");
-
-    const TARGET_ITEMS: usize = 10_000;
-    const CHUNK_SIZE: usize = 1_000;
+    const TARGET_ITEMS: usize = 10_000_000;
+    const CHUNK_SIZE: usize = 1_000_000;
     const MIN_SIZE: usize = 1;
     const MAX_SIZE: usize = 16 * 1024; // 16KB
+    const VERIFICATION_SAMPLE_RATE: usize = 100;
 
-    let mut heap = Heap::new_in_memory();
+    println!(
+        "Heap Correctness Test: Inserting 10,000,000 items and verifying {} sampled items",
+        TARGET_ITEMS / VERIFICATION_SAMPLE_RATE
+    );
+
+    let temp_dir = tempfile::tempdir().expect("Failed to create temporary directory");
+    let temp_dir = PathBuf::from("/Users/murariuf/Source/mapx2/target/heap_test");
+    std::fs::create_dir_all(&temp_dir).expect("Failed to create test directory");
+
+    let mut heap = Heap::new(&temp_dir).unwrap();
     let mut rng = StdRng::seed_from_u64(42);
     let mut verification_map: HashMap<HeapIdx, (usize, u64)> = HashMap::new(); // Store index -> (original_size, hash)
 
-    let start_time = Instant::now();
+    // To avoid storing 10M entries in memory, we'll sample every 100th item for verification
 
-    println!("Starting insertion in chunks of {} items...", CHUNK_SIZE);
+    let start_time = Instant::now();
+    let mut next_progress = 1_000_000;
+
+    println!("Starting insertion in chunks of {CHUNK_SIZE} items...");
 
     while heap.len() < TARGET_ITEMS {
         // Generate a chunk of data
         let chunk_data = generate_random_data_chunk(CHUNK_SIZE, MIN_SIZE, MAX_SIZE, &mut rng);
+        let start_time = Instant::now();
 
         // Insert chunk and store verification info
         for data in chunk_data {
             let original_size = data.len();
-
-            // Calculate hash of original data
-            let mut hasher = DefaultHasher::new();
-            data.hash(&mut hasher);
-            let hash = hasher.finish();
-
             let index = heap.append(&data);
-            verification_map.insert(index, (original_size, hash));
+            let elapsed = start_time.elapsed();
 
-            if heap.len() >= TARGET_ITEMS {
+            // Only store verification info for sampled items to save memory
+            if heap.len() % VERIFICATION_SAMPLE_RATE == 0 {
+                // Calculate hash of original data
+                let mut hasher = DefaultHasher::new();
+                data.hash(&mut hasher);
+                let hash = hasher.finish();
+                verification_map.insert(index, (original_size, hash));
+            }
+
+            // Progress reporting
+            let current_len = heap.len();
+            if current_len >= next_progress {
+                let rate = CHUNK_SIZE as f64 / elapsed.as_secs_f64();
+                println!(
+                    "Inserted {} items in {:.2}s (rate: {:.0} items/sec)",
+                    CHUNK_SIZE,
+                    elapsed.as_secs_f64(),
+                    rate
+                );
+                next_progress += 1_000_000;
+            }
+
+            if current_len >= TARGET_ITEMS {
                 break;
             }
         }
@@ -65,7 +94,7 @@ fn main() {
     let final_count = heap.len();
 
     println!("\n=== Insertion Complete ===");
-    println!("Final count: {} items", final_count);
+    println!("Final count: {final_count} items");
     println!("Insertion time: {:.2}s", insertion_time.as_secs_f64());
     println!(
         "Average insertion rate: {:.0} items/sec",
@@ -78,6 +107,7 @@ fn main() {
 
     let mut verified_count = 0;
     let mut errors = 0;
+    let mut next_verify_progress = 1_000_000;
 
     for (index, (original_size, expected_hash)) in &verification_map {
         if let Some(retrieved_data) = heap.get(*index) {
@@ -101,15 +131,32 @@ fn main() {
             trimmed_data.hash(&mut hasher);
             let actual_hash = hasher.finish();
             if actual_hash != *expected_hash {
-                eprintln!("Content mismatch for index {:?}", index);
+                eprintln!("Content mismatch for index {index:?}");
                 errors += 1;
                 continue;
             }
 
             verified_count += 1;
+
+            // Progress reporting
+            if verified_count >= next_verify_progress {
+                let elapsed = verify_start.elapsed();
+                let rate = verified_count as f64 / elapsed.as_secs_f64();
+                println!(
+                    "Verified {} items in {:.2}s (rate: {:.0} items/sec)",
+                    verified_count,
+                    elapsed.as_secs_f64(),
+                    rate
+                );
+                next_verify_progress += 1_000_000;
+            }
         } else {
-            eprintln!("Failed to retrieve data for index {:?}", index);
+            eprintln!("Failed to retrieve data for index {index:?}");
             errors += 1;
+        }
+
+        if verified_count + errors >= TARGET_ITEMS {
+            break;
         }
     }
 
@@ -117,8 +164,8 @@ fn main() {
     let total_time = start_time.elapsed();
 
     println!("\n=== Verification Complete ===");
-    println!("Verified: {} items", verified_count);
-    println!("Errors: {}", errors);
+    println!("Verified: {verified_count} items");
+    println!("Errors: {errors}");
     println!("Verification time: {:.2}s", verification_time.as_secs_f64());
     println!(
         "Average verification rate: {:.0} items/sec",
@@ -133,12 +180,9 @@ fn main() {
     );
 
     if errors == 0 {
-        println!(
-            "✅ ALL TESTS PASSED! Heap correctness verified for {} items.",
-            verified_count
-        );
+        println!("✅ ALL TESTS PASSED! Heap correctness verified for {verified_count} items.");
     } else {
-        println!("❌ {} errors found during verification.", errors);
+        println!("❌ {errors} errors found during verification.");
         std::process::exit(1);
     }
 }

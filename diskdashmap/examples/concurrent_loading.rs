@@ -1,5 +1,5 @@
 use diskdashmap::DiskDashMap;
-use opendiskmap::{
+use diskhashmap::{
     DiskMapError, MMapFile,
     types::{Native, Str},
 };

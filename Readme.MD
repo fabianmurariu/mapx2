@@ -3,8 +3,8 @@
 [![CI](https://github.com/fabianmurariu/mapx2/workflows/CI/badge.svg)](https://github.com/fabianmurariu/mapx2/actions/workflows/ci.yml)
 [![Security Audit](https://github.com/fabianmurariu/mapx2/workflows/Security%20Audit/badge.svg)](https://github.com/fabianmurariu/mapx2/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/fabianmurariu/mapx2/workflows/CodeQL/badge.svg)](https://github.com/fabianmurariu/mapx2/actions/workflows/codeql.yml)
-[![Crates.io](https://img.shields.io/crates/v/opendiskmap.svg)](https://crates.io/crates/opendiskmap)
-[![Documentation](https://docs.rs/opendiskmap/badge.svg)](https://docs.rs/opendiskmap)
+[![Crates.io](https://img.shields.io/crates/v/diskhashmap.svg)](https://crates.io/crates/diskhashmap)
+[![Documentation](https://docs.rs/diskhashmap/badge.svg)](https://docs.rs/diskhashmap)
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](https://github.com/fabianmurariu/mapx2)
 [![Rust Version](https://img.shields.io/badge/rust-1.88%2B-blue.svg)](https://github.com/fabianmurariu/mapx2)
 
@@ -26,7 +26,7 @@ There are no durability guarantees, but the data is stored in a memory-mapped fi
 
 | Crate                          | Description                                  | Status            |
 | ------------------------------ | -------------------------------------------- | ----------------- |
-| [`opendiskmap`](./opendiskmap) | Single-threaded persistent hash map          | ✅ Stable         |
+| [`diskhashmap`](./diskhashmap) | Single-threaded persistent hash map          | ✅ Stable         |
 | [`diskdashmap`](./diskdashmap) | Multi-threaded hash map with sharded locking | 🚧 In Development |
 
 ## 🚀 Quick Start
@@ -35,14 +35,14 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-opendiskmap = "0.1"
+diskhashmap = "0.1"
 rkyv = "0.7" # Optional: for zero-copy serialization
 ```
 
 ### Basic Usage with Native Types
 
 ```rust
-use opendiskmap::{DiskHashMap, Native, Str, Result};
+use diskhashmap::{DiskHashMap, Native, Str, Result};
 use tempfile::tempdir;
 
 fn main() -> Result<()> {
@@ -79,7 +79,7 @@ fn main() -> Result<()> {
 ### Working with Raw Bytes
 
 ```rust
-use opendiskmap::{DiskHashMap, Bytes, Result};
+use diskhashmap::{DiskHashMap, Bytes, Result};
 use tempfile::tempdir;
 
 fn main() -> Result<()> {
@@ -105,7 +105,7 @@ fn main() -> Result<()> {
 ### Zero-Copy with rkyv
 
 ```rust
-use opendiskmap::{DiskHashMap, Native, types::Arch, Result};
+use diskhashmap::{DiskHashMap, Native, types::Arch, Result};
 use rkyv::{Archive, Deserialize, Serialize};
 use tempfile::tempdir;
 
@@ -152,7 +152,7 @@ fn main() -> Result<()> {
 ### Custom Capacity Configuration
 
 ```rust
-use opendiskmap::{DiskHashMap, Bytes, Result};
+use diskhashmap::{DiskHashMap, Bytes, Result};
 use tempfile::tempdir;
 
 fn main() -> Result<()> {
@@ -181,7 +181,7 @@ fn main() -> Result<()> {
 ### Type Aliases for Common Use Cases
 
 ```rust
-use opendiskmap::{U64StringMap, StringU64Map, StringStringMap, Result};
+use diskhashmap::{U64StringMap, StringU64Map, StringStringMap, Result};
 use tempfile::tempdir;
 
 fn main() -> Result<()> {
@@ -214,7 +214,7 @@ fn main() -> Result<()> {
 ### Entry API for Efficient Updates
 
 ```rust
-use opendiskmap::{DiskHashMap, Native, MapEntry, Result};
+use diskhashmap::{DiskHashMap, Native, MapEntry, Result};
 use tempfile::tempdir;
 
 fn main() -> Result<()> {

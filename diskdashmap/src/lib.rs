@@ -6,7 +6,7 @@ use std::sync::OnceLock;
 pub mod refs;
 
 use crossbeam_utils::CachePadded;
-use opendiskmap::{
+use diskhashmap::{
     ByteStore, DiskHashMap as OpenDiskHM, Heap, MMapFile, Result,
     heap::HeapOps,
     types::{BytesDecode, BytesEncode},
@@ -37,7 +37,7 @@ where
 }
 
 // For MMapFile backing store with default hasher
-impl<K, V> DiskDashMap<K, V, opendiskmap::MMapFile, FxBuildHasher>
+impl<K, V> DiskDashMap<K, V, diskhashmap::MMapFile, FxBuildHasher>
 where
     K: for<'a> BytesEncode<'a> + for<'a> BytesDecode<'a>,
     V: for<'a> BytesEncode<'a> + for<'a> BytesDecode<'a>,
@@ -73,7 +73,7 @@ where
     }
 }
 
-impl<K, V, S> DiskDashMap<K, V, opendiskmap::MMapFile, S>
+impl<K, V, S> DiskDashMap<K, V, diskhashmap::MMapFile, S>
 where
     S: BuildHasher + Clone + Default,
     K: for<'a> BytesEncode<'a> + for<'a> BytesDecode<'a>,
@@ -222,12 +222,12 @@ where
     }
 
     /// Remove a key from the map.
-    /// Note: Current opendiskmap doesn't support remove operation
+    /// Note: Current diskhashmap doesn't support remove operation
     pub fn remove<'a>(
         &self,
         _key: &'a <K as BytesEncode<'a>>::EItem,
     ) -> Result<Option<<V as BytesDecode<'a>>::DItem>> {
-        // TODO: Implement when opendiskmap supports remove
+        // TODO: Implement when diskhashmap supports remove
         Ok(None)
     }
 
@@ -255,9 +255,9 @@ where
     }
 
     /// Clear all entries from the map.
-    /// Note: Current opendiskmap doesn't support clear operation
+    /// Note: Current diskhashmap doesn't support clear operation
     pub fn clear(&self) {
-        // TODO: Implement when opendiskmap supports clear
+        // TODO: Implement when diskhashmap supports clear
         // For now, this is a no-op
     }
 }
@@ -265,7 +265,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use opendiskmap::{MMapFile, types::Str};
+    use diskhashmap::{MMapFile, types::Str};
     use rustc_hash::FxBuildHasher;
     use std::sync::Arc;
     use std::thread;
@@ -316,7 +316,7 @@ mod tests {
                         map.insert(&key, &value)?;
                         assert_eq!(map.get(&key)?.unwrap().value()?, value);
                     }
-                    Ok::<_, opendiskmap::DiskMapError>(())
+                    Ok::<_, diskhashmap::DiskMapError>(())
                 })
             })
             .collect();
