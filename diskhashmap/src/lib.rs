@@ -15,14 +15,15 @@
 //! ## Quick Start
 //!
 //! ```rust
-//! use diskhashmap::{DiskHashMap, Native, Str, Result};
+//! use diskhashmap::{DiskHashMap, Native, Str, MMapFile, Result};
+//! use rustc_hash::FxBuildHasher;
 //! use tempfile::tempdir;
 //!
 //! # fn main() -> Result<()> {
 //! let dir = tempdir()?;
 //!
 //! // Create a persistent map with u64 keys and String values
-//! let mut map: DiskHashMap<Native<u64>, Str, _, _> =
+//! let mut map: DiskHashMap<Native<u64>, Str, MMapFile, FxBuildHasher> =
 //!     DiskHashMap::new_in(dir.path())?;
 //!
 //! // Insert and retrieve data
@@ -31,7 +32,7 @@
 //!
 //! // Data persists automatically across program runs
 //! drop(map);
-//! let map: DiskHashMap<Native<u64>, Str, _, _> =
+//! let map: DiskHashMap<Native<u64>, Str, MMapFile, FxBuildHasher> =
 //!     DiskHashMap::load_from(dir.path())?;
 //! assert_eq!(map.get(&42)?, Some("Hello, World!"));
 //! # Ok(())
