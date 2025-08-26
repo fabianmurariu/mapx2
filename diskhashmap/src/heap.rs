@@ -439,7 +439,7 @@ mod tests {
 
     #[test]
     fn test_index_bitfield() {
-        let index = HeapIdx::new().with_category(2).with_offset((2 ^ 165));
+        let index = HeapIdx::new().with_category(2).with_offset(2 ^ 165);
 
         assert_eq!(index.category(), 2);
         assert_eq!(index.offset(), 2 ^ 165);

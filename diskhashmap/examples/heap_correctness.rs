@@ -3,7 +3,6 @@ use rand::{Rng, SeedableRng, rngs::StdRng};
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::path::PathBuf;
 use std::time::Instant;
 
 fn generate_random_data_chunk(
@@ -37,7 +36,6 @@ fn main() {
     );
 
     let temp_dir = tempfile::tempdir().expect("Failed to create temporary directory");
-    let temp_dir = PathBuf::from("/Users/murariuf/Source/mapx2/target/heap_test");
     std::fs::create_dir_all(&temp_dir).expect("Failed to create test directory");
 
     let mut heap = Heap::new(&temp_dir).unwrap();

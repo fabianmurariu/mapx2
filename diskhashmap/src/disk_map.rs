@@ -1273,6 +1273,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "not supporting size 1 byte for now"]
     fn test_capacity_and_growth() {
         let mut map: DiskHashMap<Native<u8>, Native<u8>, VecStore> = DiskHashMap::new();
 

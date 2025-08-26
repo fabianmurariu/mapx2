@@ -45,7 +45,3 @@ harness = false
 [[bench]]
 name = "u64_key_benchmark"
 harness = false
-
-[[bench]]
-name = "heap_vs_buffers"
-harness = false
