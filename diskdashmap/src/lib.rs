@@ -1,3 +1,95 @@
+//! # DiskDashMap - Multi-threaded Sharded Persistent Hash Map
+//! 
+//! A concurrent, sharded disk-backed hash map implementation that provides thread-safe access
+//! to persistent storage. Built on top of `diskhashmap`, this crate adds concurrency support
+//! through fine-grained sharding and reader-writer locks.
+//!
+//! ## Features
+//!
+//! - **Thread-Safe**: Concurrent access through sharded locking with minimal contention
+//! - **Persistent Storage**: Memory-mapped files for durability across program runs
+//! - **Scalable**: Automatically determines optimal shard count based on CPU cores
+//! - **Zero-Copy**: Compatible with zero-copy serialization frameworks like rkyv
+//! - **High Performance**: Each shard operates independently for maximum throughput
+//! - **Load Balancing**: Intelligent key distribution across shards using dedicated hash function
+//!
+//! ## Architecture
+//!
+//! `DiskDashMap` divides the key space across multiple shards, where each shard is an independent
+//! `DiskHashMap` stored in its own subdirectory. This design provides:
+//!
+//! - **Reduced Lock Contention**: Multiple threads can operate on different shards simultaneously
+//! - **Better Cache Locality**: Each shard maintains its own memory-mapped storage
+//! - **Scalable Persistence**: Shard count scales with available CPU cores (cores × 4, power-of-2)
+//!
+//! ## Quick Start
+//!
+//! ```rust
+//! use diskdashmap::DiskDashMap;
+//! use diskhashmap::{Str, Result};
+//! use tempfile::tempdir;
+//! use std::sync::Arc;
+//! use std::thread;
+//!
+//! # fn main() -> Result<()> {
+//! let dir = tempdir()?;
+//!
+//! // Create a concurrent persistent map
+//! let map: Arc<DiskDashMap<Str, Str, _, _>> = 
+//!     Arc::new(DiskDashMap::new_in(dir.path())?);
+//!
+//! // Insert data from multiple threads
+//! let handles: Vec<_> = (0..4).map(|i| {
+//!     let map = Arc::clone(&map);
+//!     thread::spawn(move || -> Result<()> {
+//!         for j in 0..100 {
+//!             let key = format!("key_{}_{}", i, j);
+//!             let value = format!("value_{}_{}", i, j);
+//!             map.insert(&key, &value)?;
+//!         }
+//!         Ok(())
+//!     })
+//! }).collect();
+//!
+//! // Wait for all threads to complete
+//! for handle in handles {
+//!     handle.join().unwrap()?;
+//! }
+//!
+//! // Verify data from main thread
+//! assert_eq!(map.get("key_0_0")?.unwrap().value()?, "value_0_0");
+//! assert_eq!(map.len(), 400);
+//!
+//! // Data persists across program runs
+//! drop(map);
+//! let map: DiskDashMap<Str, Str, _, _> = 
+//!     DiskDashMap::load_from(dir.path())?;
+//! assert_eq!(map.get("key_0_0")?.unwrap().value()?, "value_0_0");
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! ## Shard Management
+//!
+//! ```rust
+//! use diskdashmap::DiskDashMap;
+//! use diskhashmap::{Str, Result};
+//! use tempfile::tempdir;
+//!
+//! # fn main() -> Result<()> {
+//! let dir = tempdir()?;
+//!
+//! // Create map with specific shard count
+//! let map: DiskDashMap<Str, Str, _, _> = 
+//!     DiskDashMap::with_shards_in(dir.path(), 16)?;
+//!
+//! println!("Shard count: {}", map.shard_count()); // 16
+//!
+//! // Each shard is stored in a separate subdirectory: 0/, 1/, 2/, etc.
+//! # Ok(())
+//! # }
+//! ```
+
 use std::hash::BuildHasher;
 use std::io;
 use std::path::Path;

@@ -27,7 +27,7 @@ There are no durability guarantees, but the data is stored in a memory-mapped fi
 | Crate                          | Description                                  | Status            |
 | ------------------------------ | -------------------------------------------- | ----------------- |
 | [`diskhashmap`](./diskhashmap) | Single-threaded persistent hash map          | ✅ Stable         |
-| [`diskdashmap`](./diskdashmap) | Multi-threaded hash map with sharded locking | 🚧 In Development |
+| [`diskdashmap`](./diskdashmap) | Multi-threaded hash map with sharded locking | ✅ Stable         |
 
 ## 🚀 Quick Start
 
