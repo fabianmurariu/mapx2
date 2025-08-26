@@ -46,11 +46,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create temporary directory for DiskDashMap
     let temp_dir = TempDir::new()?;
-    println!("Using temporary directory: {:?}", temp_dir.path());
+    println!("Using temporary directory: {:?}", &temp_dir);
 
     // Create DiskDashMap
     let disk_map: Arc<DiskDashMap<Str, Native<usize>, MMapFile, FxBuildHasher>> = Arc::new(
-        DiskDashMap::new_with_capacity(temp_dir.path(), 2_000_000, 32768, Some(100 * 1024 * 1024))?,
+        DiskDashMap::new_with_capacity(&temp_dir, 2_000_000, 32768, Some(100 * 1024 * 1024))?,
     );
 
     // Convert std_map to Vec for concurrent access

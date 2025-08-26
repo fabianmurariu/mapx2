@@ -158,7 +158,7 @@ impl MMapFile {
             .read(true)
             .write(true)
             .create(true)
-            .truncate(true)
+            .truncate(false)
             .open(path)?;
 
         let path = path.to_path_buf();

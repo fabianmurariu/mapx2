@@ -419,7 +419,7 @@ impl HeapOps<MMapFile> for Heap<MMapFile> {
             let element_size = SLAB_SIZES[category];
             let slab_path = self.base_path.join(format!("slab{category}.bin"));
 
-            let initial_size = METADATA_SIZE + element_size * 128;
+            let initial_size = (METADATA_SIZE + element_size * 128).max(100 * 1024 * 1024);
             let store = MMapFile::new(&slab_path, initial_size).unwrap_or_else(|e| {
                 panic!("Failed to create slab file {}: {}", slab_path.display(), e)
             });
