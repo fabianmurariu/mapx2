@@ -189,6 +189,7 @@ pub struct PageEntry<'a, S: ByteStore> {
     pos: i64,
 }
 
+#[allow(clippy::needless_lifetimes)]
 impl<'a, S: ByteStore> PageEntry<'a, S> {
     pub fn page_mut(&mut self) -> &mut [u8] {
         &mut self.slab.store.as_mut()[self.range.clone()]
@@ -203,7 +204,8 @@ impl<'a, S: ByteStore> PageEntry<'a, S> {
     }
 }
 
-impl<S: ByteStore> PageEntry<'_, S> {
+#[allow(clippy::needless_lifetimes)]
+impl<'a, S: ByteStore> PageEntry<'a, S> {
     pub(crate) fn write_with_len(&mut self, len: usize, buf: &[u8]) -> io::Result<()> {
         let page = self.page_mut();
         let len_bytes = &usize::to_le_bytes(len);
@@ -293,10 +295,10 @@ impl Heap<MMapFile> {
                 *size,
             )));
             total += length_bytes;
-            if let Some(max_bytes) = max_bytes
-                && total >= max_bytes
-            {
-                break;
+            if let Some(max_bytes) = max_bytes {
+                if total >= max_bytes {
+                    break;
+                }
             }
         }
 

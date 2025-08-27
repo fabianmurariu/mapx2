@@ -18,7 +18,7 @@ impl<'a> CowBytes<'a> {
     }
 }
 
-impl<'a> AsRef<[u8]> for CowBytes<'a> {
+impl AsRef<[u8]> for CowBytes<'_> {
     fn as_ref(&self) -> &[u8] {
         match self {
             CowBytes::Borrowed(item) => item,
@@ -27,7 +27,7 @@ impl<'a> AsRef<[u8]> for CowBytes<'a> {
     }
 }
 
-impl<'a> Deref for CowBytes<'a> {
+impl Deref for CowBytes<'_> {
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {

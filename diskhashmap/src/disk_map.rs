@@ -597,6 +597,7 @@ where
     }
 }
 
+#[allow(clippy::needless_lifetimes)]
 impl<'a, K, V, BS, S> OccupiedEntry<'a, K, V, BS, S>
 where
     BS: ByteStore,
@@ -623,6 +624,7 @@ where
 }
 
 // Trait-based extensions for OccupiedEntry
+#[allow(clippy::needless_lifetimes)]
 impl<'a, K, V, BS, S> OccupiedEntry<'a, K, V, BS, S>
 where
     BS: ByteStore,
