@@ -37,7 +37,7 @@ fn main() {
 
     let start_time = Instant::now();
 
-    println!("Starting insertion in chunks of {} items...", CHUNK_SIZE);
+    println!("Starting insertion in chunks of {CHUNK_SIZE} items...");
 
     while heap.len() < TARGET_ITEMS {
         // Generate a chunk of data
@@ -65,7 +65,7 @@ fn main() {
     let final_count = heap.len();
 
     println!("\n=== Insertion Complete ===");
-    println!("Final count: {} items", final_count);
+    println!("Final count: {final_count} items");
     println!("Insertion time: {:.2}s", insertion_time.as_secs_f64());
     println!(
         "Average insertion rate: {:.0} items/sec",
@@ -101,14 +101,14 @@ fn main() {
             trimmed_data.hash(&mut hasher);
             let actual_hash = hasher.finish();
             if actual_hash != *expected_hash {
-                eprintln!("Content mismatch for index {:?}", index);
+                eprintln!("Content mismatch for index {index:?}");
                 errors += 1;
                 continue;
             }
 
             verified_count += 1;
         } else {
-            eprintln!("Failed to retrieve data for index {:?}", index);
+            eprintln!("Failed to retrieve data for index {index:?}");
             errors += 1;
         }
     }
@@ -117,8 +117,8 @@ fn main() {
     let total_time = start_time.elapsed();
 
     println!("\n=== Verification Complete ===");
-    println!("Verified: {} items", verified_count);
-    println!("Errors: {}", errors);
+    println!("Verified: {verified_count} items");
+    println!("Errors: {errors}");
     println!("Verification time: {:.2}s", verification_time.as_secs_f64());
     println!(
         "Average verification rate: {:.0} items/sec",
@@ -133,12 +133,9 @@ fn main() {
     );
 
     if errors == 0 {
-        println!(
-            "✅ ALL TESTS PASSED! Heap correctness verified for {} items.",
-            verified_count
-        );
+        println!("✅ ALL TESTS PASSED! Heap correctness verified for {verified_count} items.");
     } else {
-        println!("❌ {} errors found during verification.", errors);
+        println!("❌ {errors} errors found during verification.");
         std::process::exit(1);
     }
 }
