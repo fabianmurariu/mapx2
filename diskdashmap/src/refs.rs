@@ -1,6 +1,6 @@
 use std::hash::BuildHasher;
 
-use opendiskmap::{ByteStore, BytesDecode, BytesEncode, Result, entry::Entry};
+use diskhashmap::{ByteStore, BytesDecode, BytesEncode, Heap, Result, entry::Entry, heap::HeapOps};
 use parking_lot::RwLockReadGuard;
 
 pub struct Ref<'a, K, V, BS: ByteStore, S: BuildHasher>
@@ -10,7 +10,7 @@ where
     BS: ByteStore,
     S: BuildHasher,
 {
-    pub(crate) shard: RwLockReadGuard<'a, opendiskmap::DiskHashMap<K, V, BS, S>>,
+    pub(crate) shard: RwLockReadGuard<'a, diskhashmap::DiskHashMap<K, V, BS, S>>,
     pub(crate) entry: Entry,
 }
 
@@ -20,10 +20,11 @@ where
     V: for<'b> BytesEncode<'b> + for<'b> BytesDecode<'b>,
     BS: ByteStore,
     S: BuildHasher,
+    Heap<BS>: HeapOps<BS>,
 {
     pub fn new_from_key(
         key: &'a <K as BytesEncode<'a>>::EItem,
-        shard: RwLockReadGuard<'a, opendiskmap::DiskHashMap<K, V, BS, S>>,
+        shard: RwLockReadGuard<'a, diskhashmap::DiskHashMap<K, V, BS, S>>,
     ) -> Result<Option<Self>> {
         let entry = shard.find_entry(key)?;
         let reader = entry.map(|e| Self { shard, entry: e });

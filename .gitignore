@@ -2,3 +2,4 @@
 */proptest-regressions
 .idea/
 profile.json.gz
+.zed/

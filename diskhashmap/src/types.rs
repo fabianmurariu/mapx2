@@ -18,7 +18,7 @@ impl<'a> CowBytes<'a> {
     }
 }
 
-impl<'a> AsRef<[u8]> for CowBytes<'a> {
+impl AsRef<[u8]> for CowBytes<'_> {
     fn as_ref(&self) -> &[u8] {
         match self {
             CowBytes::Borrowed(item) => item,
@@ -27,7 +27,7 @@ impl<'a> AsRef<[u8]> for CowBytes<'a> {
     }
 }
 
-impl<'a> Deref for CowBytes<'a> {
+impl Deref for CowBytes<'_> {
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
@@ -38,16 +38,19 @@ impl<'a> Deref for CowBytes<'a> {
     }
 }
 
+/// Trait for extracting actual bytes from stored format
+pub trait BytesActual<'a> {
+    fn bytes_actual(bytes: &'a [u8]) -> &'a [u8];
+}
+
 /// Trait for encoding types into byte representation
-pub trait BytesEncode<'a> {
+pub trait BytesEncode<'a>: BytesActual<'a> {
     type EItem: 'a + ?Sized;
 
     /// Encode an item into bytes
-    fn bytes_encode(item: &'a Self::EItem) -> Result<CowBytes<'a>>;
+    fn bytes_encode(item: &'a Self::EItem) -> Result<(Option<usize>, CowBytes<'a>)>;
 
-    fn eq_alt(l: &[u8], r: &[u8]) -> bool {
-        l == r
-    }
+    fn eq_alt(l: &[u8], r: &[u8]) -> bool;
 
     fn hash_alt<S: Hasher>(item: &[u8], s: &mut S) -> u64 {
         item.hash(s);
@@ -56,7 +59,7 @@ pub trait BytesEncode<'a> {
 }
 
 /// Trait for decoding types from byte representation
-pub trait BytesDecode<'a> {
+pub trait BytesDecode<'a>: BytesActual<'a> {
     type DItem: 'a;
 
     /// Decode bytes into an item
@@ -94,14 +97,23 @@ impl Default for Bytes {
 }
 
 // Implementations for Native<T>
+impl<'a, T> BytesActual<'a> for Native<T>
+where
+    T: bytemuck::Pod,
+{
+    fn bytes_actual(bytes: &'a [u8]) -> &'a [u8] {
+        bytes
+    }
+}
+
 impl<'a, T> BytesEncode<'a> for Native<T>
 where
     T: bytemuck::Pod + Eq + std::hash::Hash,
 {
     type EItem = T;
 
-    fn bytes_encode(item: &'a Self::EItem) -> Result<CowBytes<'a>> {
-        Ok(CowBytes::Borrowed(bytemuck::bytes_of(item)))
+    fn bytes_encode(item: &'a Self::EItem) -> Result<(Option<usize>, CowBytes<'a>)> {
+        Ok((None, CowBytes::Borrowed(bytemuck::bytes_of(item))))
     }
 
     fn eq_alt(l: &[u8], r: &[u8]) -> bool {
@@ -135,11 +147,24 @@ where
 }
 
 // Implementations for Str
+impl<'a> BytesActual<'a> for Str {
+    fn bytes_actual(bytes: &'a [u8]) -> &'a [u8] {
+        let len_offset = std::mem::size_of::<usize>();
+        let len = usize::from_le_bytes(bytes[0..len_offset].try_into().unwrap());
+        &bytes[len_offset..len_offset + len]
+    }
+}
+
 impl<'a> BytesEncode<'a> for Str {
     type EItem = str;
 
-    fn bytes_encode(item: &'a Self::EItem) -> Result<CowBytes<'a>> {
-        Ok(CowBytes::Borrowed(item.as_bytes()))
+    fn bytes_encode(item: &'a Self::EItem) -> Result<(Option<usize>, CowBytes<'a>)> {
+        let bytes = item.as_bytes();
+        Ok((Some(bytes.len()), CowBytes::Borrowed(bytes)))
+    }
+
+    fn eq_alt(l: &[u8], r: &[u8]) -> bool {
+        l == Self::bytes_actual(r)
     }
 }
 
@@ -147,16 +172,29 @@ impl<'a> BytesDecode<'a> for Str {
     type DItem = &'a str;
 
     fn bytes_decode(bytes: &'a [u8]) -> Result<Self::DItem> {
-        std::str::from_utf8(bytes).map_err(|e| DiskMapError::Decoding(e.to_string()))
+        let str_bytes = Self::bytes_actual(bytes);
+        std::str::from_utf8(str_bytes).map_err(|e| DiskMapError::Decoding(e.to_string()))
     }
 }
 
 // Implementations for Bytes
+impl<'a> BytesActual<'a> for Bytes {
+    fn bytes_actual(bytes: &'a [u8]) -> &'a [u8] {
+        let len_offset = std::mem::size_of::<usize>();
+        let len = usize::from_le_bytes(bytes[0..len_offset].try_into().unwrap());
+        &bytes[len_offset..len_offset + len]
+    }
+}
+
 impl<'a> BytesEncode<'a> for Bytes {
     type EItem = [u8];
 
-    fn bytes_encode(item: &'a Self::EItem) -> Result<CowBytes<'a>> {
-        Ok(CowBytes::Borrowed(item))
+    fn bytes_encode(item: &'a Self::EItem) -> Result<(Option<usize>, CowBytes<'a>)> {
+        Ok((Some(item.len()), CowBytes::Borrowed(item)))
+    }
+
+    fn eq_alt(l: &[u8], r: &[u8]) -> bool {
+        l == Self::bytes_actual(r)
     }
 }
 
@@ -164,7 +202,7 @@ impl<'a> BytesDecode<'a> for Bytes {
     type DItem = &'a [u8];
 
     fn bytes_decode(bytes: &'a [u8]) -> Result<Self::DItem> {
-        Ok(bytes)
+        Ok(Self::bytes_actual(bytes))
     }
 }
 
@@ -180,6 +218,17 @@ pub mod rkyv {
 
     pub struct Arch<T>(PhantomData<T>);
 
+    impl<'a, T> BytesActual<'a> for Arch<T>
+    where
+        T: ::rkyv::Archive,
+    {
+        fn bytes_actual(bytes: &'a [u8]) -> &'a [u8] {
+            let len_offset = std::mem::size_of::<usize>();
+            let len = usize::from_le_bytes(bytes[0..len_offset].try_into().unwrap());
+            &bytes[len_offset..len_offset + len]
+        }
+    }
+
     impl<
         'a,
         T: for<'b> ::rkyv::Serialize<
@@ -189,10 +238,15 @@ pub mod rkyv {
     {
         type EItem = T;
 
-        fn bytes_encode(item: &'a Self::EItem) -> Result<CowBytes<'a>> {
+        fn bytes_encode(item: &'a Self::EItem) -> Result<(Option<usize>, CowBytes<'a>)> {
             let bytes = ::rkyv::to_bytes::<::rkyv::rancor::Error>(item)
                 .map_err(|e| DiskMapError::Serialization(e.to_string()))?;
-            Ok(CowBytes::owned(bytes))
+            let len = bytes.len();
+            Ok((Some(len), CowBytes::owned(bytes)))
+        }
+
+        fn eq_alt(l: &[u8], r: &[u8]) -> bool {
+            l == Self::bytes_actual(r)
         }
     }
 
@@ -204,7 +258,8 @@ pub mod rkyv {
         type DItem = &'a <T as Archive>::Archived;
 
         fn bytes_decode(bytes: &'a [u8]) -> Result<Self::DItem> {
-            ::rkyv::access::<::rkyv::Archived<T>, ::rkyv::rancor::Error>(bytes)
+            let actual_bytes = Self::bytes_actual(bytes);
+            ::rkyv::access::<::rkyv::Archived<T>, ::rkyv::rancor::Error>(actual_bytes)
                 .map_err(|e| DiskMapError::Decoding(e.to_string()))
         }
     }

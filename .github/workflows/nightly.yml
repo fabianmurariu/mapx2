@@ -76,4 +76,4 @@ jobs:
       - name: Memory leak check
         run: |
           # Run a subset of tests under valgrind
-          cargo valgrind test -p opendiskmap buffers::tests::test_basic_operations_vec_backend
+          cargo valgrind test -p diskhashmap buffers::tests::test_basic_operations_vec_backend

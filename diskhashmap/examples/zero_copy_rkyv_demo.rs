@@ -1,7 +1,7 @@
 #[cfg(feature = "rkyv")]
-use opendiskmap::byte_store::MMapFile;
+use diskhashmap::byte_store::MMapFile;
 #[cfg(feature = "rkyv")]
-use opendiskmap::{DiskHashMap, Native, Result, types::rkyv::Arch};
+use diskhashmap::{DiskHashMap, Native, Result, types::rkyv::Arch};
 #[cfg(feature = "rkyv")]
 use rkyv::{Archive, Deserialize, Serialize};
 #[cfg(feature = "rkyv")]

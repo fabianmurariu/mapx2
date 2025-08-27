@@ -15,6 +15,19 @@ pub struct FixedVec<T, S: ByteStore> {
     _marker: PhantomData<T>,
 }
 
+impl<T, S: ByteStore> std::fmt::Debug for FixedVec<T, S>
+where
+    T: Pod + std::fmt::Debug,
+    S: ByteStore + std::fmt::Debug,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FixedVec")
+            .field("capacity", &self.capacity)
+            .field("store", &self.store)
+            .finish()
+    }
+}
+
 impl<T, S> FixedVec<T, S>
 where
     T: Pod,
@@ -34,9 +47,9 @@ where
         self.capacity
     }
 
-    pub fn store(&self) -> &S {
-        &self.store
-    }
+    // pub fn store(&self) -> &S {
+    //     &self.store
+    // }
 
     fn store_offsets(&self) -> (usize, usize) {
         let size_of_t = std::mem::size_of::<T>();

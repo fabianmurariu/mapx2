@@ -21,7 +21,7 @@ Expected performance: Y ops/sec (or comparison with std::HashMap)
 
 - Hardware: [e.g. M1 MacBook Pro, Intel i7-8700K]
 - OS: [e.g. Ubuntu 22.04]
-- Rust version: [e.g. 1.88.0]
+- Rust version: [e.g. 1.85.0]
 - Package version: [e.g. 0.1.0]
 
 **Data Characteristics**

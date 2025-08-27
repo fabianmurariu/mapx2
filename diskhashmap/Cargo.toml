@@ -1,5 +1,5 @@
 [package]
-name = "opendiskmap"
+name = "diskhashmap"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

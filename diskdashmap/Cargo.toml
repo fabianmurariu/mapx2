@@ -18,10 +18,10 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
-rkyv = ["opendiskmap/rkyv"]
+rkyv = ["diskhashmap/rkyv"]
 
 [dependencies]
-opendiskmap = { path = "../opendiskmap" }
+diskhashmap = { path = "../diskhashmap" }
 parking_lot.workspace = true
 rustc-hash.workspace = true
 crossbeam-utils.workspace = true

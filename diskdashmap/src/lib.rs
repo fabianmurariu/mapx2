@@ -1,3 +1,95 @@
+//! # DiskDashMap - Multi-threaded Sharded Persistent Hash Map
+//!
+//! A concurrent, sharded disk-backed hash map implementation that provides thread-safe access
+//! to persistent storage. Built on top of `diskhashmap`, this crate adds concurrency support
+//! through fine-grained sharding and reader-writer locks.
+//!
+//! ## Features
+//!
+//! - **Thread-Safe**: Concurrent access through sharded locking with minimal contention
+//! - **Persistent Storage**: Memory-mapped files for durability across program runs
+//! - **Scalable**: Automatically determines optimal shard count based on CPU cores
+//! - **Zero-Copy**: Compatible with zero-copy serialization frameworks like rkyv
+//! - **High Performance**: Each shard operates independently for maximum throughput
+//! - **Load Balancing**: Intelligent key distribution across shards using dedicated hash function
+//!
+//! ## Architecture
+//!
+//! `DiskDashMap` divides the key space across multiple shards, where each shard is an independent
+//! `DiskHashMap` stored in its own subdirectory. This design provides:
+//!
+//! - **Reduced Lock Contention**: Multiple threads can operate on different shards simultaneously
+//! - **Better Cache Locality**: Each shard maintains its own memory-mapped storage
+//! - **Scalable Persistence**: Shard count scales with available CPU cores (cores × 4, power-of-2)
+//!
+//! ## Quick Start
+//!
+//! ```rust
+//! use diskdashmap::DiskDashMap;
+//! use diskhashmap::{Str, Result};
+//! use tempfile::tempdir;
+//! use std::sync::Arc;
+//! use std::thread;
+//!
+//! # fn main() -> Result<()> {
+//! let dir = tempdir()?;
+//!
+//! // Create a concurrent persistent map
+//! let map: Arc<DiskDashMap<Str, Str, _, _>> =
+//!     Arc::new(DiskDashMap::new_in(dir.path())?);
+//!
+//! // Insert data from multiple threads
+//! let handles: Vec<_> = (0..4).map(|i| {
+//!     let map = Arc::clone(&map);
+//!     thread::spawn(move || -> Result<()> {
+//!         for j in 0..100 {
+//!             let key = format!("key_{}_{}", i, j);
+//!             let value = format!("value_{}_{}", i, j);
+//!             map.insert(&key, &value)?;
+//!         }
+//!         Ok(())
+//!     })
+//! }).collect();
+//!
+//! // Wait for all threads to complete
+//! for handle in handles {
+//!     handle.join().unwrap()?;
+//! }
+//!
+//! // Verify data from main thread
+//! assert_eq!(map.get("key_0_0")?.unwrap().value()?, "value_0_0");
+//! assert_eq!(map.len(), 400);
+//!
+//! // Data persists across program runs
+//! drop(map);
+//! let map: DiskDashMap<Str, Str, _, _> =
+//!     DiskDashMap::load_from(dir.path())?;
+//! assert_eq!(map.get("key_0_0")?.unwrap().value()?, "value_0_0");
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! ## Shard Management
+//!
+//! ```rust
+//! use diskdashmap::DiskDashMap;
+//! use diskhashmap::{Str, Result};
+//! use tempfile::tempdir;
+//!
+//! # fn main() -> Result<()> {
+//! let dir = tempdir()?;
+//!
+//! // Create map with specific shard count
+//! let map: DiskDashMap<Str, Str, _, _> =
+//!     DiskDashMap::with_shards_in(dir.path(), 16)?;
+//!
+//! println!("Shard count: {}", map.shard_count()); // 16
+//!
+//! // Each shard is stored in a separate subdirectory: 0/, 1/, 2/, etc.
+//! # Ok(())
+//! # }
+//! ```
+
 use std::hash::BuildHasher;
 use std::io;
 use std::path::Path;
@@ -6,8 +98,9 @@ use std::sync::OnceLock;
 pub mod refs;
 
 use crossbeam_utils::CachePadded;
-use opendiskmap::{
-    ByteStore, DiskHashMap as OpenDiskHM, MMapFile, Result,
+use diskhashmap::{
+    ByteStore, DiskHashMap as OpenDiskHM, Heap, MMapFile, Result,
+    heap::HeapOps,
     types::{BytesDecode, BytesEncode},
 };
 use parking_lot::RwLock;
@@ -36,7 +129,7 @@ where
 }
 
 // For MMapFile backing store with default hasher
-impl<K, V> DiskDashMap<K, V, opendiskmap::MMapFile, FxBuildHasher>
+impl<K, V> DiskDashMap<K, V, diskhashmap::MMapFile, FxBuildHasher>
 where
     K: for<'a> BytesEncode<'a> + for<'a> BytesDecode<'a>,
     V: for<'a> BytesEncode<'a> + for<'a> BytesDecode<'a>,
@@ -62,17 +155,17 @@ where
     /// the num_keys, key_capacity, and values_capacity parameters are per each shard
     pub fn new_with_capacity<P: AsRef<Path>>(
         dir: P,
-        num_keys: usize,
-        keys_capacity: usize,
-        values_capacity: usize,
+        num_entries: usize,
+        slots_per_slab: usize,
+        max_size: Option<usize>,
     ) -> io::Result<Self> {
         Self::with_hasher_and_shards_in(dir, FxBuildHasher, default_shard_amount(), |path| {
-            OpenDiskHM::with_capacity(path, num_keys, keys_capacity, values_capacity)
+            OpenDiskHM::with_capacity(path, num_entries, slots_per_slab, max_size)
         })
     }
 }
 
-impl<K, V, S> DiskDashMap<K, V, opendiskmap::MMapFile, S>
+impl<K, V, S> DiskDashMap<K, V, diskhashmap::MMapFile, S>
 where
     S: BuildHasher + Clone + Default,
     K: for<'a> BytesEncode<'a> + for<'a> BytesDecode<'a>,
@@ -179,6 +272,7 @@ where
     S: BuildHasher,
     K: for<'a> BytesEncode<'a> + for<'a> BytesDecode<'a>,
     V: for<'a> BytesEncode<'a> + for<'a> BytesDecode<'a>,
+    Heap<BS>: HeapOps<BS>,
 {
     pub fn shards(&self) -> &[Shard<K, V, BS, S>] {
         &self.shards
@@ -188,7 +282,7 @@ where
     /// Uses a different hash calculation than the individual shard's find_slot to ensure
     /// better distribution and avoid hash collisions between shard selection and slot selection.
     fn shard_for_key<'a>(&self, key: &'a <K as BytesEncode<'a>>::EItem) -> Result<usize> {
-        let key_bytes = K::bytes_encode(key)?;
+        let (_, key_bytes) = K::bytes_encode(key)?;
         let mut hasher = self.hasher.build_hasher();
         let base_hash = K::hash_alt(&key_bytes, &mut hasher);
 
@@ -220,12 +314,12 @@ where
     }
 
     /// Remove a key from the map.
-    /// Note: Current opendiskmap doesn't support remove operation
+    /// Note: Current diskhashmap doesn't support remove operation
     pub fn remove<'a>(
         &self,
         _key: &'a <K as BytesEncode<'a>>::EItem,
     ) -> Result<Option<<V as BytesDecode<'a>>::DItem>> {
-        // TODO: Implement when opendiskmap supports remove
+        // TODO: Implement when diskhashmap supports remove
         Ok(None)
     }
 
@@ -253,9 +347,9 @@ where
     }
 
     /// Clear all entries from the map.
-    /// Note: Current opendiskmap doesn't support clear operation
+    /// Note: Current diskhashmap doesn't support clear operation
     pub fn clear(&self) {
-        // TODO: Implement when opendiskmap supports clear
+        // TODO: Implement when diskhashmap supports clear
         // For now, this is a no-op
     }
 }
@@ -263,7 +357,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use opendiskmap::{MMapFile, types::Str};
+    use diskhashmap::{MMapFile, types::Str};
     use rustc_hash::FxBuildHasher;
     use std::sync::Arc;
     use std::thread;
@@ -314,7 +408,7 @@ mod tests {
                         map.insert(&key, &value)?;
                         assert_eq!(map.get(&key)?.unwrap().value()?, value);
                     }
-                    Ok::<_, opendiskmap::DiskMapError>(())
+                    Ok::<_, diskhashmap::DiskMapError>(())
                 })
             })
             .collect();
