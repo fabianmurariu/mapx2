@@ -19,7 +19,7 @@ This repository includes several GitHub Actions workflows to ensure code quality
   - Benchmark compilation check
 
 - **Miri**: Memory safety testing with Rust's Miri interpreter
-- **MSRV**: Minimum Supported Rust Version testing (1.88.0)
+- **MSRV**: Minimum Supported Rust Version testing (1.85.0)
 - **Documentation**: Documentation build with warning checks
 - **Security Audit**: Dependency vulnerability scanning with `cargo-audit`
 - **Code Coverage**: Coverage analysis with `cargo-llvm-cov` and Codecov upload
@@ -152,7 +152,7 @@ cargo llvm-cov --all-features --workspace
 1. **Formatting failures**: Run `cargo fmt --all` locally
 2. **Clippy warnings**: Address warnings shown by `cargo clippy`
 3. **Test failures**: Ensure all tests pass with `cargo test --all-features`
-4. **MSRV failures**: Code may use features newer than Rust 1.88.0
+4. **MSRV failures**: Code may use features newer than Rust 1.85.0
 
 ### Performance
 

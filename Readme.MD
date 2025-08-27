@@ -6,7 +6,7 @@
 [![Crates.io](https://img.shields.io/crates/v/diskhashmap.svg)](https://crates.io/crates/diskhashmap)
 [![Documentation](https://docs.rs/diskhashmap/badge.svg)](https://docs.rs/diskhashmap)
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](https://github.com/fabianmurariu/mapx2)
-[![Rust Version](https://img.shields.io/badge/rust-1.88%2B-blue.svg)](https://github.com/fabianmurariu/mapx2)
+[![Rust Version](https://img.shields.io/badge/rust-1.85%2B-blue.svg)](https://github.com/fabianmurariu/mapx2)
 
 High-performance, persistent hash maps for Rust with **zero-copy deserialization** support and **memory-mapped file backing**.
 
@@ -24,10 +24,10 @@ There are no durability guarantees, but the data is stored in a memory-mapped fi
 
 ## 📦 Crates
 
-| Crate                          | Description                                  | Status            |
-| ------------------------------ | -------------------------------------------- | ----------------- |
-| [`diskhashmap`](./diskhashmap) | Single-threaded persistent hash map          | ✅ Stable         |
-| [`diskdashmap`](./diskdashmap) | Multi-threaded hash map with sharded locking | ✅ Stable         |
+| Crate                          | Description                                  | Status    |
+| ------------------------------ | -------------------------------------------- | --------- |
+| [`diskhashmap`](./diskhashmap) | Single-threaded persistent hash map          | ✅ Stable |
+| [`diskdashmap`](./diskdashmap) | Multi-threaded hash map with sharded locking | ✅ Stable |
 
 ## 🚀 Quick Start
 

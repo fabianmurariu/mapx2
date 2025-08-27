@@ -34,7 +34,7 @@ fn main() {
 **Environment (please complete the following information):**
 
 - OS: [e.g. Ubuntu 22.04, Windows 11, macOS 13.0]
-- Rust version: [e.g. 1.88.0]
+- Rust version: [e.g. 1.85.0]
 - Package version: [e.g. 0.1.0]
 
 **Additional context**
