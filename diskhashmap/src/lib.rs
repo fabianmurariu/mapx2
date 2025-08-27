@@ -1,5 +1,5 @@
 //! # DiskHashMap - Single-threaded Persistent Hash Map
-//! 
+//!
 //! A high-performance, persistent hash map implementation with memory-mapped file backing.
 //! This crate provides zero-copy deserialization support and is optimized for cache-friendly
 //! access patterns using open addressing with linear probing.

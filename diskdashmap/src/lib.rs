@@ -1,5 +1,5 @@
 //! # DiskDashMap - Multi-threaded Sharded Persistent Hash Map
-//! 
+//!
 //! A concurrent, sharded disk-backed hash map implementation that provides thread-safe access
 //! to persistent storage. Built on top of `diskhashmap`, this crate adds concurrency support
 //! through fine-grained sharding and reader-writer locks.
@@ -35,7 +35,7 @@
 //! let dir = tempdir()?;
 //!
 //! // Create a concurrent persistent map
-//! let map: Arc<DiskDashMap<Str, Str, _, _>> = 
+//! let map: Arc<DiskDashMap<Str, Str, _, _>> =
 //!     Arc::new(DiskDashMap::new_in(dir.path())?);
 //!
 //! // Insert data from multiple threads
@@ -62,7 +62,7 @@
 //!
 //! // Data persists across program runs
 //! drop(map);
-//! let map: DiskDashMap<Str, Str, _, _> = 
+//! let map: DiskDashMap<Str, Str, _, _> =
 //!     DiskDashMap::load_from(dir.path())?;
 //! assert_eq!(map.get("key_0_0")?.unwrap().value()?, "value_0_0");
 //! # Ok(())
@@ -80,7 +80,7 @@
 //! let dir = tempdir()?;
 //!
 //! // Create map with specific shard count
-//! let map: DiskDashMap<Str, Str, _, _> = 
+//! let map: DiskDashMap<Str, Str, _, _> =
 //!     DiskDashMap::with_shards_in(dir.path(), 16)?;
 //!
 //! println!("Shard count: {}", map.shard_count()); // 16
