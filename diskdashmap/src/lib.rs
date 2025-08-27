@@ -99,7 +99,7 @@ pub mod refs;
 
 use crossbeam_utils::CachePadded;
 use diskhashmap::{
-    ByteStore, DiskHashMap as OpenDiskHM, Heap, MMapFile, Result,
+    ByteStore, DiskHashMap, Heap, MMapFile, Result,
     heap::HeapOps,
     types::{BytesDecode, BytesEncode},
 };
@@ -114,7 +114,7 @@ fn default_shard_amount() -> usize {
         (std::thread::available_parallelism().map_or(1, usize::from) * 4).next_power_of_two()
     })
 }
-pub type Shard<K, V, BS, S> = CachePadded<RwLock<OpenDiskHM<K, V, BS, S>>>;
+pub type Shard<K, V, BS, S> = CachePadded<RwLock<DiskHashMap<K, V, BS, S>>>;
 /// A concurrent, sharded disk-backed hash map.
 /// Each shard is a separate disk-backed hash map stored in its own subdirectory.
 /// Generic over key type K, value type V, backing store BS, and hasher S.
@@ -147,7 +147,7 @@ where
     /// Create a new concurrent disk hash map with specified number of shards.
     pub fn with_shards_in<P: AsRef<Path>>(dir: P, shard_count: usize) -> io::Result<Self> {
         Self::with_hasher_and_shards_in(dir, FxBuildHasher, shard_count, |path| {
-            OpenDiskHM::new_in(path)
+            DiskHashMap::new_in(path)
         })
     }
 
@@ -160,7 +160,7 @@ where
         max_size: Option<usize>,
     ) -> io::Result<Self> {
         Self::with_hasher_and_shards_in(dir, FxBuildHasher, default_shard_amount(), |path| {
-            OpenDiskHM::with_capacity(path, num_entries, slots_per_slab, max_size)
+            DiskHashMap::with_capacity(path, num_entries, slots_per_slab, max_size)
         })
     }
 }
@@ -176,7 +176,7 @@ where
         dir: P,
         hasher: S,
         shard_count: usize,
-        builder: impl Fn(&Path) -> io::Result<OpenDiskHM<K, V, MMapFile, S>>,
+        builder: impl Fn(&Path) -> io::Result<DiskHashMap<K, V, MMapFile, S>>,
     ) -> io::Result<Self> {
         let shard_count = shard_count.next_power_of_two();
         let shift = shard_count.trailing_zeros() as usize;
@@ -248,11 +248,11 @@ where
 
             let map = if shard_indices.contains(&i) {
                 // Load existing shard
-                OpenDiskHM::load_from(&shard_dir)?
+                DiskHashMap::load_from(&shard_dir)?
             } else {
                 // Create empty shard for missing indices
                 std::fs::create_dir_all(&shard_dir)?;
-                OpenDiskHM::new_in(&shard_dir)?
+                DiskHashMap::new_in(&shard_dir)?
             };
 
             shards.push(CachePadded::new(RwLock::new(map)));
@@ -442,7 +442,7 @@ mod tests {
                     temp_dir.path(),
                     FxBuildHasher,
                     shard_count,
-                    OpenDiskHM::new_in,
+                    DiskHashMap::new_in,
                 )
                 .unwrap();
             let key1 = "key1".to_string();
