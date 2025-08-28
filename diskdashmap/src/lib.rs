@@ -95,6 +95,7 @@ use std::io;
 use std::path::Path;
 use std::sync::OnceLock;
 
+pub mod iter;
 pub mod refs;
 
 use crossbeam_utils::CachePadded;

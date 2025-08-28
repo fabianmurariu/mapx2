@@ -120,30 +120,6 @@ impl<K, V> Default for DiskHashMap<K, V, VecStore, FxBuildHasher> {
     }
 }
 
-// impl<K, V, BS, S> DiskHashMap<K, V, BS, S>
-// where
-//     BS: ByteStore,
-//     S: BuildHasher + Default,
-// {
-//     /// Creates a new HashMap with the given backing stores
-//     pub fn with_stores(entry_store: BS, keys_store: BS, values_store: BS) -> Self {
-//         let keys = Heap::new(keys_store);
-//         let values = Heap::new(values_store);
-//         let entries = FixedVec::new(entry_store);
-//         let capacity = entries.capacity();
-
-//         Self {
-//             keys,
-//             values,
-//             entries,
-//             capacity,
-//             size: 0,
-//             hasher: S::default(),
-//             _marker: PhantomData,
-//         }
-//     }
-// }
-
 impl<K, V, BS, S> DiskHashMap<K, V, BS, S>
 where
     BS: ByteStore,
@@ -171,6 +147,46 @@ where
             return f64::INFINITY;
         }
         self.size as f64 / self.capacity as f64
+    }
+
+    /// Returns a reference to the entries array (for internal use by iterators)
+    pub(crate) fn entries(&self) -> &FixedVec<Entry, BS> {
+        &self.entries
+    }
+
+    /// Returns a reference to the heap (for internal use by iterators)
+    pub(crate) fn heap(&self) -> &Heap<BS> {
+        &self.heap
+    }
+
+    /// Returns an iterator over the key-value pairs of the map.
+    pub fn iter(&self) -> crate::iter::Iter<'_, K, V, BS, S>
+    where
+        K: for<'a> BytesDecode<'a>,
+        V: for<'a> BytesDecode<'a>,
+        Heap<BS>: HeapOps<BS>,
+    {
+        crate::iter::Iter::new(self)
+    }
+
+    /// Returns an iterator over the keys of the map.
+    pub fn keys(&self) -> crate::iter::Keys<'_, K, V, BS, S>
+    where
+        K: for<'a> BytesDecode<'a>,
+        V: for<'a> BytesDecode<'a>,
+        Heap<BS>: HeapOps<BS>,
+    {
+        crate::iter::Keys::new(self)
+    }
+
+    /// Returns an iterator over the values of the map.
+    pub fn values(&self) -> crate::iter::Values<'_, K, V, BS, S>
+    where
+        K: for<'a> BytesDecode<'a>,
+        V: for<'a> BytesDecode<'a>,
+        Heap<BS>: HeapOps<BS>,
+    {
+        crate::iter::Values::new(self)
     }
 
     /// Check if resizing is needed based on load factor
@@ -1495,5 +1511,66 @@ mod tests {
         if let Err(err) = result {
             assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
         }
+    }
+
+    #[test]
+    fn test_iterators() {
+        let mut map: DiskHashMap<Native<u64>, Str, VecStore> = DiskHashMap::new();
+
+        // Insert test data
+        let test_data = vec![
+            (1u64, "one"),
+            (2u64, "two"),
+            (3u64, "three"),
+            (4u64, "four"),
+            (5u64, "five"),
+        ];
+
+        for (key, value) in &test_data {
+            map.insert(key, value).unwrap();
+        }
+
+        // Test iter() - collect all key-value pairs
+        let mut collected: Vec<_> = map.iter().map(|result| result.unwrap()).collect();
+        collected.sort_by_key(|(k, _)| *k);
+
+        assert_eq!(collected.len(), test_data.len());
+        for (i, (key, value)) in collected.iter().enumerate() {
+            assert_eq!(*key, test_data[i].0);
+            assert_eq!(*value, test_data[i].1);
+        }
+
+        // Test keys() - collect all keys
+        let mut keys: Vec<_> = map.keys().map(|result| result.unwrap()).collect();
+        keys.sort();
+
+        assert_eq!(keys.len(), test_data.len());
+        for (i, key) in keys.iter().enumerate() {
+            assert_eq!(*key, test_data[i].0);
+        }
+
+        // Test values() - collect all values
+        let mut values: Vec<_> = map.values().map(|result| result.unwrap()).collect();
+        values.sort();
+
+        let mut expected_values: Vec<_> = test_data.iter().map(|(_, v)| *v).collect();
+        expected_values.sort();
+
+        assert_eq!(values.len(), test_data.len());
+        for (actual, expected) in values.iter().zip(expected_values.iter()) {
+            assert_eq!(actual, expected);
+        }
+
+        // Test ExactSizeIterator
+        assert_eq!(map.iter().len(), test_data.len());
+        assert_eq!(map.keys().len(), test_data.len());
+        assert_eq!(map.values().len(), test_data.len());
+
+        // Test empty map
+        let empty_map: DiskHashMap<Native<u64>, Str, VecStore> = DiskHashMap::new();
+        assert_eq!(empty_map.iter().count(), 0);
+        assert_eq!(empty_map.keys().count(), 0);
+        assert_eq!(empty_map.values().count(), 0);
+        assert_eq!(empty_map.iter().len(), 0);
     }
 }
