@@ -6,6 +6,7 @@ use std::path::Path;
 use rustc_hash::FxBuildHasher;
 
 use crate::byte_store::{MMapFile, VecStore};
+use crate::entries::{EntriesImpl, EntriesStorage};
 use crate::entry::Entry;
 use crate::error::Result;
 use crate::fixed_buffers::FixedVec;
@@ -89,7 +90,7 @@ where
     BS: ByteStore,
     S: BuildHasher,
 {
-    entries: FixedVec<Entry, BS>,
+    entries: EntriesImpl<BS>,
     heap: Heap<BS>,
     capacity: usize,
     size: usize,
@@ -149,8 +150,8 @@ where
         self.size as f64 / self.capacity as f64
     }
 
-    /// Returns a reference to the entries array (for internal use by iterators)
-    pub(crate) fn entries(&self) -> &FixedVec<Entry, BS> {
+    /// Returns a reference to the entries storage (for internal use by iterators)
+    pub(crate) fn entries(&self) -> &EntriesImpl<BS> {
         &self.entries
     }
 
@@ -216,7 +217,7 @@ where
 
         // Linear probing
         for _ in 0..self.capacity {
-            let entry = &self.entries[index];
+            let entry = self.entries.get_entry(index);
             if entry.is_empty() {
                 // Empty slot, key not found
                 return Err(index);
@@ -251,7 +252,7 @@ where
         let value_idx = self.insert_value_into_heap(value_bytes, value_len)?;
 
         let entry = Entry::occupied_at_pos(key_idx, value_idx);
-        self.entries[slot_idx] = entry;
+        self.entries.set_entry(slot_idx, entry);
         self.size += 1;
         Ok(entry)
     }
@@ -321,7 +322,7 @@ where
 
         // Re-hash all existing entries into the new larger array
         for i in 0..self.capacity {
-            let entry = self.entries[i];
+            let entry = *self.entries.get_entry(i);
             if entry.is_occupied() {
                 let key_data = self
                     .heap
@@ -335,8 +336,8 @@ where
 
                 // Linear probing in the new_entries array
                 loop {
-                    if new_entries[index].is_empty() {
-                        new_entries[index] = entry;
+                    if new_entries.get_entry(index).is_empty() {
+                        new_entries.set_entry(index, entry);
                         break;
                     }
                     index = (index + 1) % actual_new_capacity;
@@ -394,7 +395,7 @@ where
     ) -> Result<Option<<V as BytesDecode<'_>>::DItem>> {
         let new_value_idx = self.insert_value_into_heap(value_bytes, value_len)?;
         let old_value_idx = {
-            let entry = &mut self.entries[slot_idx];
+            let entry = self.entries.get_entry_mut(slot_idx);
             let old_value_idx = entry.value_pos();
             entry.set_new_kv(entry.key_pos(), new_value_idx);
             old_value_idx
@@ -463,7 +464,7 @@ where
         let (_, key_bytes) = K::bytes_encode(key)?;
         match self.find_slot_inner(&key_bytes) {
             Ok(slot_idx) => {
-                let entry = &self.entries[slot_idx];
+                let entry = self.entries.get_entry(slot_idx);
                 if entry.is_occupied() {
                     Ok(Some(*entry))
                 } else {
@@ -526,7 +527,7 @@ impl<K, V, S: BuildHasher + Default> DiskHashMap<K, V, VecStore, S> {
 
         Self {
             heap,
-            entries,
+            entries: EntriesImpl::Single(entries),
             capacity,
             size: 0,
             hasher: S::default(),
@@ -549,7 +550,7 @@ where
 
         Ok(Self {
             heap,
-            entries,
+            entries: EntriesImpl::Single(entries),
             capacity,
             size: 0,
             hasher: S::default(),
@@ -582,7 +583,7 @@ where
 
         Ok(Self {
             heap,
-            entries,
+            entries: EntriesImpl::Single(entries),
             capacity,
             size: 0,
             hasher: S::default(),
@@ -597,14 +598,14 @@ where
 
         let mut size = 0;
         for i in 0..capacity {
-            if entries[i].is_occupied() {
+            if entries.get_entry(i).is_occupied() {
                 size += 1;
             }
         }
 
         Ok(Self {
             heap,
-            entries,
+            entries: EntriesImpl::Single(entries),
             capacity,
             size,
             hasher: S::default(),
@@ -622,7 +623,7 @@ where
 {
     /// Get a reference to the key in the entry
     fn key_bytes(&self) -> &[u8] {
-        let entry = &self.map.entries[self.slot_idx];
+        let entry = self.map.entries.get_entry(self.slot_idx);
         self.map
             .heap
             .get(entry.key_pos())
@@ -631,7 +632,7 @@ where
 
     /// Get a reference to the value in the entry
     fn value_bytes(&self) -> &[u8] {
-        let entry = &self.map.entries[self.slot_idx];
+        let entry = self.map.entries.get_entry(self.slot_idx);
         self.map
             .heap
             .get(entry.value_pos())

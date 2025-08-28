@@ -228,8 +228,118 @@ impl<BS: ByteStore> EntriesStorage<BS> for SingleArrayEntries<BS> {
     }
 }
 
+/// Direct implementation of EntriesStorage for FixedVec<Entry, BS>
+impl<BS: ByteStore> Index<usize> for FixedVec<Entry, BS> {
+    type Output = Entry;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        &(**self)[index]
+    }
+}
+
+impl<BS: ByteStore> IndexMut<usize> for FixedVec<Entry, BS> {
+    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
+        &mut (**self)[index]
+    }
+}
+
+impl<BS: ByteStore> EntriesStorage<BS> for FixedVec<Entry, BS> {
+    fn capacity(&self) -> usize {
+        FixedVec::capacity(self)
+    }
+
+    fn occupied_count(&self) -> usize {
+        self.iter().filter(|e| e.is_occupied()).count()
+    }
+
+    fn new_with_capacity(store: BS, capacity: usize) -> Result<Self> {
+        let entries = FixedVec::new(store);
+        // Verify that the capacity matches what we expect
+        if entries.capacity() < capacity {
+            return Err(crate::error::DiskMapError::InvalidInput(format!(
+                "Store capacity {} is less than requested capacity {}",
+                entries.capacity(),
+                capacity
+            )));
+        }
+        Ok(entries)
+    }
+
+    fn new_empty(&self, new_capacity: usize) -> Self {
+        self.new_empty(new_capacity)
+    }
+
+    fn set_entry(&mut self, index: usize, entry: Entry) {
+        self[index] = entry;
+    }
+}
+
+/// Enum to hold different entry storage implementations
+/// This allows switching between single and double array implementations
+#[derive(Debug)]
+pub enum EntriesImpl<BS: ByteStore> {
+    Single(FixedVec<Entry, BS>),
+    #[allow(dead_code)]
+    Double(DoubleArrayEntries<BS>),
+}
+
+impl<BS: ByteStore> Index<usize> for EntriesImpl<BS> {
+    type Output = Entry;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        match self {
+            EntriesImpl::Single(entries) => &entries[index],
+            EntriesImpl::Double(_) => todo!("Double array not implemented yet"),
+        }
+    }
+}
+
+impl<BS: ByteStore> IndexMut<usize> for EntriesImpl<BS> {
+    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
+        match self {
+            EntriesImpl::Single(entries) => &mut entries[index],
+            EntriesImpl::Double(_) => todo!("Double array not implemented yet"),
+        }
+    }
+}
+
+impl<BS: ByteStore> EntriesStorage<BS> for EntriesImpl<BS> {
+    fn capacity(&self) -> usize {
+        match self {
+            EntriesImpl::Single(entries) => entries.capacity(),
+            EntriesImpl::Double(_) => todo!("Double array not implemented yet"),
+        }
+    }
+
+    fn occupied_count(&self) -> usize {
+        match self {
+            EntriesImpl::Single(entries) => entries.occupied_count(),
+            EntriesImpl::Double(_) => todo!("Double array not implemented yet"),
+        }
+    }
+
+    fn new_with_capacity(store: BS, capacity: usize) -> Result<Self> {
+        Ok(EntriesImpl::Single(FixedVec::new_with_capacity(store, capacity)?))
+    }
+
+    fn new_empty(&self, new_capacity: usize) -> Self {
+        match self {
+            EntriesImpl::Single(entries) => EntriesImpl::Single(entries.new_empty(new_capacity)),
+            EntriesImpl::Double(_) => todo!("Double array not implemented yet"),
+        }
+    }
+
+    fn set_entry(&mut self, index: usize, entry: Entry) {
+        match self {
+            EntriesImpl::Single(entries) => entries.set_entry(index, entry),
+            EntriesImpl::Double(_) => todo!("Double array not implemented yet"),
+        }
+    }
+}
+
 /// Future implementation: Double array entries for incremental resizing
 /// This is a placeholder/documentation for the future implementation
+#[derive(Debug)]
 #[allow(dead_code)]
 pub struct DoubleArrayEntries<BS: ByteStore> {
     old_entries: Option<FixedVec<Entry, BS>>,
