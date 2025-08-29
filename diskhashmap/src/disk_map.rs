@@ -534,6 +534,55 @@ impl<K, V, S: BuildHasher + Default> DiskHashMap<K, V, VecStore, S> {
             _marker: PhantomData,
         }
     }
+
+    /// Creates a new in-memory HashMap with double array entries for incremental resizing
+    pub fn new_with_double_array() -> Self {
+        use crate::entries::{DoubleArrayEntries, ResizeConfig};
+        
+        let heap = Heap::new_in_memory();
+        let entries = FixedVec::<Entry, _>::new(VecStore::new());
+        let capacity = entries.capacity();
+        
+        let config = ResizeConfig {
+            use_double_array: true,
+            rehash_batch_size: 8,
+            ..Default::default()
+        };
+        
+        let double_entries = DoubleArrayEntries::new(entries, config.rehash_batch_size);
+
+        Self {
+            heap,
+            entries: EntriesImpl::Double(double_entries),
+            capacity,
+            size: 0,
+            hasher: S::default(),
+            _marker: PhantomData,
+        }
+    }
+
+    /// Creates a new in-memory HashMap with specified resize configuration
+    pub fn new_with_config(config: &crate::entries::ResizeConfig) -> Self {
+        let heap = Heap::new_in_memory();
+        let entries = FixedVec::<Entry, _>::new(VecStore::new());
+        let capacity = entries.capacity();
+
+        let entries_impl = if config.use_double_array {
+            let double_entries = crate::entries::DoubleArrayEntries::new(entries, config.rehash_batch_size);
+            EntriesImpl::Double(double_entries)
+        } else {
+            EntriesImpl::Single(entries)
+        };
+
+        Self {
+            heap,
+            entries: entries_impl,
+            capacity,
+            size: 0,
+            hasher: S::default(),
+            _marker: PhantomData,
+        }
+    }
 }
 
 impl<K, V, S> DiskHashMap<K, V, MMapFile, S>
@@ -1511,6 +1560,216 @@ mod tests {
         assert!(result.is_err());
         if let Err(err) = result {
             assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        }
+    }
+
+    fn check_prop_double_array(hm: StdHashMap<Vec<u8>, Vec<u8>>) {
+        let mut map: BytesHM = DiskHashMap::new_with_double_array();
+
+        // Insert all key-value pairs from the StdHashMap
+        let mut already_inserted = vec![];
+        for (k, v) in hm.iter() {
+            map.insert(k, v).unwrap();
+            already_inserted.push((k.clone(), v.clone()));
+            for (k, v) in &already_inserted {
+                let entry = map.entry(k).unwrap();
+                assert!(entry.is_occupied(), "Expected occupied entry {k:?}:{v:?}");
+                assert_eq!(entry.key(), k);
+                match entry {
+                    MapEntry::Occupied(occupied) => {
+                        assert_eq!(occupied.value().unwrap(), v);
+                        assert_eq!(occupied.key().unwrap(), k);
+                    }
+                    MapEntry::Vacant(_) => panic!("Expected occupied entry"),
+                }
+            }
+        }
+
+        // Check the size of the map
+        assert_eq!(map.len(), hm.len());
+
+        // Check that all values can be retrieved
+        for (k, v) in hm.iter() {
+            assert_eq!(
+                map.get(k.as_slice()).unwrap(),
+                Some(v.as_slice()),
+                "key: {k:?}"
+            );
+        }
+        
+        // Verify that we're actually using double array entries
+        match &map.entries {
+            EntriesImpl::Double(_) => {}, // Good!
+            EntriesImpl::Single(_) => panic!("Expected double array entries"),
+        }
+    }
+
+    fn check_prop_double_array_native(hm: StdHashMap<u64, u64>) {
+        let mut map: DiskHashMap<Native<u64>, Native<u64>, VecStore, FxBuildHasher> =
+            DiskHashMap::new_with_double_array();
+
+        // Insert all key-value pairs from the StdHashMap
+        let mut already_inserted = vec![];
+        for (k, v) in hm.iter() {
+            map.insert(k, v).unwrap();
+            already_inserted.push((*k, *v));
+            for (k, v) in &already_inserted {
+                assert_eq!(map.get(k).unwrap(), Some(*v), "key: {k:?}");
+
+                let entry = map.entry(k).unwrap();
+                assert!(entry.is_occupied());
+                assert_eq!(entry.key(), *k);
+                match entry {
+                    MapEntry::Occupied(occupied) => {
+                        assert_eq!(occupied.value().unwrap(), *v);
+                        assert_eq!(occupied.key().unwrap(), *k)
+                    }
+                    MapEntry::Vacant(_) => panic!("Expected occupied entry"),
+                }
+            }
+        }
+
+        // Check the size of the map
+        assert_eq!(map.len(), hm.len());
+
+        // Check that all values can be retrieved
+        for (k, v) in hm.iter() {
+            assert_eq!(map.get(k).unwrap(), Some(*v), "key: {k:?}");
+        }
+        
+        // Verify that we're actually using double array entries
+        match &map.entries {
+            EntriesImpl::Double(_) => {}, // Good!
+            EntriesImpl::Single(_) => panic!("Expected double array entries"),
+        }
+    }
+
+    #[test]
+    fn it_s_a_hash_map_double_array() {
+        let small_hash_map_prop = proptest::collection::hash_map(
+            proptest::collection::vec(0u8..255, 1..32),
+            proptest::collection::vec(0u8..255, 1..32),
+            1..250,
+        );
+
+        proptest!(|(values in small_hash_map_prop)|{
+            check_prop_double_array(values);
+        });
+    }
+
+    #[test]
+    fn it_s_a_hash_map_double_array_native() {
+        let small_hash_map_prop = proptest::collection::hash_map(
+            proptest::num::u64::ANY,
+            proptest::num::u64::ANY,
+            1..250,
+        );
+
+        proptest!(|(values in small_hash_map_prop)|{
+            check_prop_double_array_native(values);
+        });
+    }
+
+    #[test]
+    fn it_s_a_hash_map_double_array_0() {
+        let mut hm = StdHashMap::new();
+        hm.insert(vec![0u8], vec![0u8]);
+        check_prop_double_array(hm);
+    }
+
+    #[test]
+    fn it_s_a_hash_map_double_array_native_0() {
+        let mut hm = StdHashMap::new();
+        hm.insert(0u64, 1u64);
+        check_prop_double_array_native(hm);
+    }
+
+    #[test]
+    fn test_double_array_incremental_resize() {
+        let mut map: BytesHM = DiskHashMap::new_with_double_array();
+        
+        // Verify we start with double array
+        match &map.entries {
+            EntriesImpl::Double(_) => {},
+            EntriesImpl::Single(_) => panic!("Expected double array entries"),
+        }
+        
+        let initial_capacity = map.capacity();
+        
+        // Insert enough items to trigger resize
+        let mut keys_values = Vec::new();
+        for i in 0u32..50 {
+            let key = format!("key_{i}");
+            let value = format!("value_{i}");
+            keys_values.push((key.clone(), value.clone()));
+            
+            let old_len = map.len();
+            map.insert(key.as_bytes(), value.as_bytes()).unwrap();
+            assert_eq!(map.len(), old_len + 1);
+            
+            // Verify we can still access all previously inserted keys
+            for (k, v) in &keys_values {
+                assert_eq!(
+                    map.get(k.as_bytes()).unwrap(), 
+                    Some(v.as_bytes()),
+                    "Failed to retrieve key {k} after inserting {key}"
+                );
+            }
+        }
+        
+        // Capacity should have grown (triggered resize)
+        assert!(map.capacity() > initial_capacity, 
+            "Expected capacity {} > initial {}", map.capacity(), initial_capacity);
+        
+        // All items should still be accessible
+        for (key, value) in &keys_values {
+            assert_eq!(
+                map.get(key.as_bytes()).unwrap(), 
+                Some(value.as_bytes()),
+                "Failed to retrieve key {key} after all insertions"
+            );
+        }
+        
+        assert_eq!(map.len(), keys_values.len());
+    }
+
+    #[test]
+    fn test_double_array_resize_state_transitions() {
+        let mut map: DiskHashMap<Native<u64>, Native<u64>, VecStore, FxBuildHasher> = 
+            DiskHashMap::new_with_double_array();
+        
+        // Start in normal state
+        match &map.entries {
+            EntriesImpl::Double(entries) => {
+                assert!(!entries.is_resizing(), "Should not be resizing initially");
+                assert_eq!(entries.effective_capacity(), entries.capacity());
+            },
+            EntriesImpl::Single(_) => panic!("Expected double array entries"),
+        }
+        
+        // Fill up to trigger resize
+        let initial_capacity = map.capacity();
+        let resize_threshold = (initial_capacity as f64 * 0.4) as usize;
+        
+        // Insert up to the threshold
+        for i in 0u64..(resize_threshold + 5) as u64 {
+            map.insert(&i, &(i * 2)).unwrap();
+            
+            // Verify all previous keys are accessible
+            for j in 0..=i {
+                assert_eq!(map.get(&j).unwrap(), Some(j * 2), 
+                    "Key {j} not found after inserting {i}");
+            }
+        }
+        
+        // Should have triggered a resize
+        assert!(map.capacity() > initial_capacity, 
+            "Expected resize: capacity {} should be > {}", map.capacity(), initial_capacity);
+        
+        // Final verification: all keys should be accessible
+        for i in 0u64..(resize_threshold + 5) as u64 {
+            assert_eq!(map.get(&i).unwrap(), Some(i * 2), 
+                "Key {i} not found in final verification");
         }
     }
 
