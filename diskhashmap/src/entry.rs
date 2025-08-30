@@ -10,7 +10,7 @@ pub enum Status {
     Empty,
     Full,
     Deleted,
-    None,
+    Moved,
 }
 
 #[bitfield(bits = 4)]
@@ -55,6 +55,10 @@ impl Entry {
         self.status().status() == Status::Deleted
     }
 
+    pub fn is_moved(&self) -> bool {
+        self.status().status() == Status::Moved
+    }
+
     pub fn key_pos(&self) -> HeapIdx {
         self.k_pos()
     }
@@ -68,5 +72,9 @@ impl Entry {
             .with_status(PaddedStatus::new().with_status(Status::Full))
             .with_k_pos(k_pos)
             .with_v_pos(v_pos);
+    }
+
+    pub fn mark_as_moved(&mut self) {
+        *self = self.with_status(PaddedStatus::new().with_status(Status::Moved));
     }
 }

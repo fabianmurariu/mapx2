@@ -50,10 +50,10 @@ where
         }
 
         // Find next occupied entry
-        while self.current_index < self.map.capacity() {
+        while self.current_index < self.map.effective_capacity() {
             let entry = &self.map.entries()[self.current_index];
             
-            if entry.is_occupied() {
+            if entry.is_occupied() && !entry.is_moved() {
                 // Get key and value from heap
                 let key_bytes = match self.map.heap().get(entry.key_pos()) {
                     Some(bytes) => bytes,

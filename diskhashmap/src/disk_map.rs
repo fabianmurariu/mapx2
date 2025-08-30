@@ -150,6 +150,12 @@ where
         self.size as f64 / self.capacity as f64
     }
 
+    /// Returns the effective capacity for iteration purposes
+    /// During resize, this includes both old and new arrays
+    pub(crate) fn effective_capacity(&self) -> usize {
+        self.entries.effective_capacity()
+    }
+
     /// Returns a reference to the entries storage (for internal use by iterators)
     pub(crate) fn entries(&self) -> &EntriesImpl<BS> {
         &self.entries
@@ -1778,6 +1784,50 @@ mod tests {
             let value = String::from_utf8(value_bytes.to_vec()).unwrap();
             iter_items.insert((key, value));
         }
+        
+        println!("BEFORE RESIZE:");
+        println!("Expected size: {}, Actual size: {}", expected_items.len(), iter_items.len());
+        println!("Map size: {}, Map capacity: {}, Effective capacity: {}", map.len(), map.capacity(), map.effective_capacity());
+        
+        // Check if we're already in resize mode
+        match &map.entries {
+            crate::entries::EntriesImpl::Double(double) => {
+                println!("Double array state - resizing: {}", double.is_resizing());
+                println!("  New array capacity: {}", double.new_array_capacity());
+                if double.is_resizing() {
+                    println!("  Rehash progress: {}", double.get_rehash_progress());
+                    if let Some(old_cap) = double.old_array_capacity() {
+                        println!("  Old array capacity: {}", old_cap);
+                    }
+                } else {
+                    println!("  Old array: None");
+                }
+            },
+            crate::entries::EntriesImpl::Single(_) => {
+                println!("Single array state");
+            }
+        }
+        
+        if iter_items != expected_items {
+            println!("Expected items: {:?}", expected_items);
+            println!("Actual items: {:?}", iter_items);
+            
+            // Check for missing items
+            for expected in &expected_items {
+                if !iter_items.contains(expected) {
+                    println!("Missing item: {:?}", expected);
+                    // Try to look up the key directly
+                    let key_bytes = expected.0.as_bytes();
+                    if let Ok(Some(_)) = map.get(key_bytes) {
+                        println!("  Key {} exists in map but missing from iterator", expected.0);
+                        
+                    } else {
+                        println!("  Key {} does not exist in map", expected.0);
+                    }
+                }
+            }
+        }
+        
         assert_eq!(iter_items, expected_items);
         
         // Force resize by adding more items
@@ -1796,6 +1846,34 @@ mod tests {
             let value = String::from_utf8(value_bytes.to_vec()).unwrap();
             iter_items.insert((key, value));
         }
+        
+        if iter_items != expected_items {
+            println!("Expected items: {:?}", expected_items);
+            println!("Actual items: {:?}", iter_items);
+            
+            // Check for missing items
+            for expected in &expected_items {
+                if !iter_items.contains(expected) {
+                    println!("Missing item: {:?}", expected);
+                    // Try to look up the key directly
+                    let key_bytes = expected.0.as_bytes();
+                    if let Ok(Some(_)) = map.get(key_bytes) {
+                        println!("  Key {} exists in map but missing from iterator", expected.0);
+                        
+                    } else {
+                        println!("  Key {} does not exist in map", expected.0);
+                    }
+                }
+            }
+            
+            // Check for extra items
+            for actual in &iter_items {
+                if !expected_items.contains(actual) {
+                    println!("Extra item: {:?}", actual);
+                }
+            }
+        }
+        
         assert_eq!(iter_items, expected_items);
         assert_eq!(iter_items.len(), 25);
     }

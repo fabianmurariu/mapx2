@@ -542,6 +542,26 @@ impl<BS: ByteStore> DoubleArrayEntries<BS> {
         }
     }
 
+    /// Returns true if currently in resize mode (has both old and new arrays)
+    pub fn is_resizing(&self) -> bool {
+        self.old_entries.is_some()
+    }
+
+    /// Returns the current rehash progress (number of old entries processed)
+    pub fn get_rehash_progress(&self) -> usize {
+        self.rehash_progress
+    }
+
+    /// Returns the new array capacity for debugging
+    pub fn new_array_capacity(&self) -> usize {
+        self.new_entries.capacity()
+    }
+
+    /// Returns the old array capacity for debugging (if resizing)
+    pub fn old_array_capacity(&self) -> Option<usize> {
+        self.old_entries.as_ref().map(|old| old.capacity())
+    }
+
     /// Starts a resize operation by creating a new array and preserving the old one
     fn start_resize_internal(&mut self, new_capacity: usize) -> Result<()> {
         if self.old_entries.is_some() {
@@ -563,16 +583,16 @@ impl<BS: ByteStore> DoubleArrayEntries<BS> {
     /// Note: This needs access to the heap to recalculate hashes from key bytes
     /// For now, we use key position as a simple hash approximation
     fn incremental_rehash_internal(&mut self, max_entries: usize) -> Result<usize> {
-        let old_entries = match &self.old_entries {
-            Some(old) => old,
-            None => return Ok(0), // Not resizing
-        };
+        if self.old_entries.is_none() {
+            return Ok(0); // Not resizing
+        }
 
         let mut rehashed = 0;
-        let old_capacity = old_entries.capacity();
+        let old_capacity = self.old_entries.as_ref().unwrap().capacity();
 
         while rehashed < max_entries && self.rehash_progress < old_capacity {
-            let entry = old_entries[self.rehash_progress];
+            // Get the entry to rehash (copy it before borrowing mutably)
+            let entry = self.old_entries.as_ref().unwrap()[self.rehash_progress];
             
             if entry.is_occupied() {
                 // TODO: In a real implementation, we would:
@@ -585,6 +605,10 @@ impl<BS: ByteStore> DoubleArrayEntries<BS> {
                 // Find insertion slot in new array
                 let new_index = self.find_insertion_slot(hash)?;
                 self.new_entries[new_index] = entry;
+                
+                // Mark the old entry as moved
+                self.old_entries.as_mut().unwrap()[self.rehash_progress].mark_as_moved();
+                
                 rehashed += 1;
             }
             
@@ -645,8 +669,8 @@ impl<BS: ByteStore> DoubleArrayEntries<BS> {
                     if !entry.is_occupied() {
                         break; // Empty slot, not found
                     }
-                    if key_matcher(entry) {
-                        // Return offset index to distinguish from new array
+                    if !entry.is_moved() && key_matcher(entry) {
+                        // Return offset index to distinguish from new array  
                         return Some(old_index + new_capacity);
                     }
                     old_index = (old_index + 1) % old_capacity;
@@ -700,7 +724,22 @@ impl<BS: ByteStore> EntriesStorage<BS> for DoubleArrayEntries<BS> {
     }
 
     fn occupied_count(&self) -> usize {
-        self.occupied_count
+        if self.old_entries.is_none() {
+            // Not resizing, return normal count
+            self.occupied_count
+        } else {
+            // During resize, count actual occupied entries to avoid double-counting
+            let new_count = self.new_entries.iter().filter(|e| e.is_occupied()).count();
+            let old_count = if let Some(ref old_entries) = self.old_entries {
+                // Only count unrelocated entries in old array (skip moved entries)
+                old_entries.iter()
+                    .filter(|e| e.is_occupied() && !e.is_moved())
+                    .count()
+            } else {
+                0
+            };
+            new_count + old_count
+        }
     }
 
     fn new_with_capacity(store: BS, capacity: usize) -> Result<Self> {
@@ -773,8 +812,8 @@ impl<BS: ByteStore> EntriesStorage<BS> for DoubleArrayEntries<BS> {
                     index = (index + 1) % new_capacity;
                 }
                 
-                // Clear the old entry so it's not counted twice during iteration
-                self.old_entries.as_mut().unwrap()[self.rehash_progress] = Entry::new();
+                // Mark the old entry as moved so iterator knows to skip it
+                self.old_entries.as_mut().unwrap()[self.rehash_progress].mark_as_moved();
                 
                 rehashed += 1;
             }
@@ -859,18 +898,19 @@ impl<BS: ByteStore> EntriesStorage<BS> for DoubleArrayEntries<BS> {
             }
         }
 
-        // If resizing, check old array for unrelocated entries
+        // If resizing, also check old array for any unrelocated entries
         if let Some(ref old_entries) = self.old_entries {
             let old_capacity = old_entries.capacity();
             let old_start_index = (hash as usize) % old_capacity;
             let mut old_index = old_start_index;
             
+            // Search the entire old array for safety (we'll optimize this later)
             for _ in 0..old_capacity {
                 let entry = &old_entries[old_index];
                 if entry.is_empty() {
                     break;
                 }
-                if !entry.is_deleted() {
+                if !entry.is_deleted() && !entry.is_moved() {
                     if key_matcher(entry) {
                         // Return index offset by new_capacity to indicate it's in old array
                         return Ok(old_index + new_capacity);
