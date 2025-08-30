@@ -349,16 +349,18 @@ where
             self.capacity = actual_new_capacity;
         } else {
             // Double array implementation: do initial batch of incremental rehashing with proper hashing
-            let _rehashed_count = self.entries.incremental_rehash_with_hasher(8, |key_pos, _value_pos| {
-                let key_data = self
-                    .heap
-                    .get(key_pos)
-                    .expect("key must exist for occupied entry");
-                let key_data = K::bytes_actual(key_data);
-                let mut hasher = self.hasher.build_hasher();
-                <K as BytesEncode>::hash_alt(key_data, &mut hasher)
-            });
-            
+            let _rehashed_count =
+                self.entries
+                    .incremental_rehash_with_hasher(8, |key_pos, _value_pos| {
+                        let key_data = self
+                            .heap
+                            .get(key_pos)
+                            .expect("key must exist for occupied entry");
+                        let key_data = K::bytes_actual(key_data);
+                        let mut hasher = self.hasher.build_hasher();
+                        <K as BytesEncode>::hash_alt(key_data, &mut hasher)
+                    });
+
             // Update capacity to the effective capacity
             self.capacity = self.entries.effective_capacity();
         }
@@ -392,17 +394,19 @@ where
     ) -> Result<Option<<V as BytesDecode<'_>>::DItem>> {
         // If we're in the middle of a resize, do some incremental rehashing
         if self.entries.is_resizing() {
-            let _rehashed_count = self.entries.incremental_rehash_with_hasher(2, |key_pos, _value_pos| {
-                let key_data = self
-                    .heap
-                    .get(key_pos)
-                    .expect("key must exist for occupied entry");
-                let key_data = K::bytes_actual(key_data);
-                let mut hasher = self.hasher.build_hasher();
-                <K as BytesEncode>::hash_alt(key_data, &mut hasher)
-            });
+            let _rehashed_count =
+                self.entries
+                    .incremental_rehash_with_hasher(2, |key_pos, _value_pos| {
+                        let key_data = self
+                            .heap
+                            .get(key_pos)
+                            .expect("key must exist for occupied entry");
+                        let key_data = K::bytes_actual(key_data);
+                        let mut hasher = self.hasher.build_hasher();
+                        <K as BytesEncode>::hash_alt(key_data, &mut hasher)
+                    });
         }
-        
+
         match self.find_slot_inner(key_bytes) {
             Err(slot_idx) => {
                 // Found an empty slot, insert new key-value pair
@@ -568,17 +572,17 @@ impl<K, V, S: BuildHasher + Default> DiskHashMap<K, V, VecStore, S> {
     /// Creates a new in-memory HashMap with double array entries for incremental resizing
     pub fn new_with_double_array() -> Self {
         use crate::entries::{DoubleArrayEntries, ResizeConfig};
-        
+
         let heap = Heap::new_in_memory();
         let entries = FixedVec::<Entry, _>::new(VecStore::new());
         let capacity = entries.capacity();
-        
+
         let config = ResizeConfig {
             use_double_array: true,
             rehash_batch_size: 8,
             ..Default::default()
         };
-        
+
         let double_entries = DoubleArrayEntries::new(entries, config.rehash_batch_size);
 
         Self {
@@ -598,7 +602,8 @@ impl<K, V, S: BuildHasher + Default> DiskHashMap<K, V, VecStore, S> {
         let capacity = entries.capacity();
 
         let entries_impl = if config.use_double_array {
-            let double_entries = crate::entries::DoubleArrayEntries::new(entries, config.rehash_batch_size);
+            let double_entries =
+                crate::entries::DoubleArrayEntries::new(entries, config.rehash_batch_size);
             EntriesImpl::Double(double_entries)
         } else {
             EntriesImpl::Single(entries)
@@ -925,7 +930,7 @@ mod tests {
             map.insert(k, v).unwrap();
             already_inserted.push((k.clone(), v.clone()));
             for (k, v) in &already_inserted {
-                // assert_eq!(map.get(k).unwrap(), Some(v.as_slice()), "key: {k:?}");
+                assert_eq!(map.get(k).unwrap(), Some(v.as_slice()), "key: {k:?}");
 
                 let entry = map.entry(k).unwrap();
                 assert!(entry.is_occupied(), "Expected occupied entry {k:?}:{v:?}");
@@ -950,6 +955,31 @@ mod tests {
                 Some(v.as_slice()),
                 "key: {k:?}"
             );
+        }
+
+        // Verify iterator returns exactly the inserted items
+        let mut iter_items = std::collections::HashSet::new();
+        for result in map.iter() {
+            let (key_bytes, value_bytes) = result.unwrap();
+            iter_items.insert((key_bytes.to_vec(), value_bytes.to_vec()));
+        }
+
+        // Convert already_inserted to HashSet for comparison
+        let expected_items: std::collections::HashSet<_> = already_inserted.into_iter().collect();
+
+        // Verify iterator has exactly the same items as inserted
+        assert_eq!(iter_items.len(), expected_items.len(), "Iterator count mismatch");
+        
+        // Check every item from iterator exists in expected
+        for (key, value) in &iter_items {
+            assert!(expected_items.contains(&(key.clone(), value.clone())), 
+                "Iterator returned unexpected item: key={:?}, value={:?}", key, value);
+        }
+
+        // Check every expected item exists in iterator results
+        for (key, value) in &expected_items {
+            assert!(iter_items.contains(&(key.clone(), value.clone())), 
+                "Iterator missing expected item: key={:?}, value={:?}", key, value);
         }
     }
 
@@ -984,6 +1014,31 @@ mod tests {
         // Check that all values can be retrieved
         for (k, v) in hm.iter() {
             assert_eq!(map.get(k).unwrap(), Some(*v), "key: {k:?}");
+        }
+
+        // Verify iterator returns exactly the inserted items
+        let mut iter_items = std::collections::HashSet::new();
+        for result in map.iter() {
+            let (key, value) = result.unwrap();
+            iter_items.insert((key, value));
+        }
+
+        // Convert already_inserted to HashSet for comparison
+        let expected_items: std::collections::HashSet<_> = already_inserted.into_iter().collect();
+
+        // Verify iterator has exactly the same items as inserted
+        assert_eq!(iter_items.len(), expected_items.len(), "Iterator count mismatch");
+        
+        // Check every item from iterator exists in expected
+        for (key, value) in &iter_items {
+            assert!(expected_items.contains(&(*key, *value)), 
+                "Iterator returned unexpected item: key={:?}, value={:?}", key, value);
+        }
+
+        // Check every expected item exists in iterator results
+        for (key, value) in &expected_items {
+            assert!(iter_items.contains(&(*key, *value)), 
+                "Iterator missing expected item: key={:?}, value={:?}", key, value);
         }
     }
 
@@ -1626,10 +1681,35 @@ mod tests {
                 "key: {k:?}"
             );
         }
+
+        // Verify iterator returns exactly the inserted items
+        let mut iter_items = std::collections::HashSet::new();
+        for result in map.iter() {
+            let (key_bytes, value_bytes) = result.unwrap();
+            iter_items.insert((key_bytes.to_vec(), value_bytes.to_vec()));
+        }
+
+        // Convert already_inserted to HashSet for comparison
+        let expected_items: std::collections::HashSet<_> = already_inserted.into_iter().collect();
+
+        // Verify iterator has exactly the same items as inserted
+        assert_eq!(iter_items.len(), expected_items.len(), "Iterator count mismatch");
         
+        // Check every item from iterator exists in expected
+        for (key, value) in &iter_items {
+            assert!(expected_items.contains(&(key.clone(), value.clone())), 
+                "Iterator returned unexpected item: key={:?}, value={:?}", key, value);
+        }
+
+        // Check every expected item exists in iterator results
+        for (key, value) in &expected_items {
+            assert!(iter_items.contains(&(key.clone(), value.clone())), 
+                "Iterator missing expected item: key={:?}, value={:?}", key, value);
+        }
+
         // Verify that we're actually using double array entries
         match &map.entries {
-            EntriesImpl::Double(_) => {}, // Good!
+            EntriesImpl::Double(_) => {} // Good!
             EntriesImpl::Single(_) => panic!("Expected double array entries"),
         }
     }
@@ -1666,10 +1746,35 @@ mod tests {
         for (k, v) in hm.iter() {
             assert_eq!(map.get(k).unwrap(), Some(*v), "key: {k:?}");
         }
+
+        // Verify iterator returns exactly the inserted items
+        let mut iter_items = std::collections::HashSet::new();
+        for result in map.iter() {
+            let (key, value) = result.unwrap();
+            iter_items.insert((key, value));
+        }
+
+        // Convert already_inserted to HashSet for comparison
+        let expected_items: std::collections::HashSet<_> = already_inserted.into_iter().collect();
+
+        // Verify iterator has exactly the same items as inserted
+        assert_eq!(iter_items.len(), expected_items.len(), "Iterator count mismatch");
         
+        // Check every item from iterator exists in expected
+        for (key, value) in &iter_items {
+            assert!(expected_items.contains(&(*key, *value)), 
+                "Iterator returned unexpected item: key={:?}, value={:?}", key, value);
+        }
+
+        // Check every expected item exists in iterator results
+        for (key, value) in &expected_items {
+            assert!(iter_items.contains(&(*key, *value)), 
+                "Iterator missing expected item: key={:?}, value={:?}", key, value);
+        }
+
         // Verify that we're actually using double array entries
         match &map.entries {
-            EntriesImpl::Double(_) => {}, // Good!
+            EntriesImpl::Double(_) => {} // Good!
             EntriesImpl::Single(_) => panic!("Expected double array entries"),
         }
     }
@@ -1717,56 +1822,60 @@ mod tests {
     #[test]
     fn test_double_array_incremental_resize() {
         let mut map: BytesHM = DiskHashMap::new_with_double_array();
-        
+
         // Verify we start with double array
         match &map.entries {
-            EntriesImpl::Double(_) => {},
+            EntriesImpl::Double(_) => {}
             EntriesImpl::Single(_) => panic!("Expected double array entries"),
         }
-        
+
         let initial_capacity = map.capacity();
-        
+
         // Insert enough items to trigger multiple resize operations
         let mut keys_values = Vec::new();
         for i in 0u32..50 {
             let key = format!("key_{i}");
             let value = format!("value_{i}");
             keys_values.push((key.clone(), value.clone()));
-            
+
             let old_len = map.len();
             map.insert(key.as_bytes(), value.as_bytes()).unwrap();
             assert_eq!(map.len(), old_len + 1);
-            
+
             // Verify we can still access all previously inserted keys
             for (k, v) in &keys_values {
                 assert_eq!(
-                    map.get(k.as_bytes()).unwrap(), 
+                    map.get(k.as_bytes()).unwrap(),
                     Some(v.as_bytes()),
                     "Failed to retrieve key {k} after inserting {key}"
                 );
             }
         }
-        
+
         // Capacity should have grown (triggered resize)
-        assert!(map.capacity() > initial_capacity, 
-            "Expected capacity {} > initial {}", map.capacity(), initial_capacity);
-        
+        assert!(
+            map.capacity() > initial_capacity,
+            "Expected capacity {} > initial {}",
+            map.capacity(),
+            initial_capacity
+        );
+
         // Verify all keys and values are still accessible
         for (key, value) in &keys_values {
             assert_eq!(
-                map.get(key.as_bytes()).unwrap(), 
+                map.get(key.as_bytes()).unwrap(),
                 Some(value.as_bytes()),
                 "key: {key}"
             );
         }
-        
+
         assert_eq!(map.len(), keys_values.len());
     }
 
     #[test]
     fn test_double_array_iterator_across_resize() {
         let mut map: BytesHM = DiskHashMap::new_with_double_array();
-        
+
         // Insert initial data
         let mut expected_items = std::collections::HashSet::new();
         for i in 0u32..15 {
@@ -1775,7 +1884,7 @@ mod tests {
             map.insert(key.as_bytes(), value.as_bytes()).unwrap();
             expected_items.insert((key, value));
         }
-        
+
         // Verify iterator before resize
         let mut iter_items = std::collections::HashSet::new();
         for result in map.iter() {
@@ -1784,52 +1893,10 @@ mod tests {
             let value = String::from_utf8(value_bytes.to_vec()).unwrap();
             iter_items.insert((key, value));
         }
-        
-        println!("BEFORE RESIZE:");
-        println!("Expected size: {}, Actual size: {}", expected_items.len(), iter_items.len());
-        println!("Map size: {}, Map capacity: {}, Effective capacity: {}", map.len(), map.capacity(), map.effective_capacity());
-        
-        // Check if we're already in resize mode
-        match &map.entries {
-            crate::entries::EntriesImpl::Double(double) => {
-                println!("Double array state - resizing: {}", double.is_resizing());
-                println!("  New array capacity: {}", double.new_array_capacity());
-                if double.is_resizing() {
-                    println!("  Rehash progress: {}", double.get_rehash_progress());
-                    if let Some(old_cap) = double.old_array_capacity() {
-                        println!("  Old array capacity: {}", old_cap);
-                    }
-                } else {
-                    println!("  Old array: None");
-                }
-            },
-            crate::entries::EntriesImpl::Single(_) => {
-                println!("Single array state");
-            }
-        }
-        
-        if iter_items != expected_items {
-            println!("Expected items: {:?}", expected_items);
-            println!("Actual items: {:?}", iter_items);
-            
-            // Check for missing items
-            for expected in &expected_items {
-                if !iter_items.contains(expected) {
-                    println!("Missing item: {:?}", expected);
-                    // Try to look up the key directly
-                    let key_bytes = expected.0.as_bytes();
-                    if let Ok(Some(_)) = map.get(key_bytes) {
-                        println!("  Key {} exists in map but missing from iterator", expected.0);
-                        
-                    } else {
-                        println!("  Key {} does not exist in map", expected.0);
-                    }
-                }
-            }
-        }
-        
+
+
         assert_eq!(iter_items, expected_items);
-        
+
         // Force resize by adding more items
         for i in 15u32..25 {
             let key = format!("key_{i}");
@@ -1837,7 +1904,7 @@ mod tests {
             map.insert(key.as_bytes(), value.as_bytes()).unwrap();
             expected_items.insert((key, value));
         }
-        
+
         // Verify iterator after resize
         iter_items.clear();
         for result in map.iter() {
@@ -1846,75 +1913,59 @@ mod tests {
             let value = String::from_utf8(value_bytes.to_vec()).unwrap();
             iter_items.insert((key, value));
         }
-        
-        if iter_items != expected_items {
-            println!("Expected items: {:?}", expected_items);
-            println!("Actual items: {:?}", iter_items);
-            
-            // Check for missing items
-            for expected in &expected_items {
-                if !iter_items.contains(expected) {
-                    println!("Missing item: {:?}", expected);
-                    // Try to look up the key directly
-                    let key_bytes = expected.0.as_bytes();
-                    if let Ok(Some(_)) = map.get(key_bytes) {
-                        println!("  Key {} exists in map but missing from iterator", expected.0);
-                        
-                    } else {
-                        println!("  Key {} does not exist in map", expected.0);
-                    }
-                }
-            }
-            
-            // Check for extra items
-            for actual in &iter_items {
-                if !expected_items.contains(actual) {
-                    println!("Extra item: {:?}", actual);
-                }
-            }
-        }
-        
+
+
         assert_eq!(iter_items, expected_items);
         assert_eq!(iter_items.len(), 25);
     }
-    
+
     #[test]
     fn test_double_array_resize_state_transitions() {
-        let mut map: DiskHashMap<Native<u64>, Native<u64>, VecStore, FxBuildHasher> = 
+        let mut map: DiskHashMap<Native<u64>, Native<u64>, VecStore, FxBuildHasher> =
             DiskHashMap::new_with_double_array();
-        
+
         // Start in normal state
         match &map.entries {
             EntriesImpl::Double(entries) => {
                 assert!(!entries.is_resizing(), "Should not be resizing initially");
                 assert_eq!(entries.effective_capacity(), entries.capacity());
-            },
+            }
             EntriesImpl::Single(_) => panic!("Expected double array entries"),
         }
-        
+
         // Fill up to trigger resize
         let initial_capacity = map.capacity();
         let resize_threshold = (initial_capacity as f64 * 0.4) as usize;
-        
+
         // Insert up to the threshold
         for i in 0u64..(resize_threshold + 5) as u64 {
             map.insert(&i, &(i * 2)).unwrap();
-            
+
             // Verify all previous keys are accessible
             for j in 0..=i {
-                assert_eq!(map.get(&j).unwrap(), Some(j * 2), 
-                    "Key {j} not found after inserting {i}");
+                assert_eq!(
+                    map.get(&j).unwrap(),
+                    Some(j * 2),
+                    "Key {j} not found after inserting {i}"
+                );
             }
         }
-        
+
         // Should have triggered a resize
-        assert!(map.capacity() > initial_capacity, 
-            "Expected resize: capacity {} should be > {}", map.capacity(), initial_capacity);
-        
+        assert!(
+            map.capacity() > initial_capacity,
+            "Expected resize: capacity {} should be > {}",
+            map.capacity(),
+            initial_capacity
+        );
+
         // Final verification: all keys should be accessible
         for i in 0u64..(resize_threshold + 5) as u64 {
-            assert_eq!(map.get(&i).unwrap(), Some(i * 2), 
-                "Key {i} not found in final verification");
+            assert_eq!(
+                map.get(&i).unwrap(),
+                Some(i * 2),
+                "Key {i} not found in final verification"
+            );
         }
     }
 
