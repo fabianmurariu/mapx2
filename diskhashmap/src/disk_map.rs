@@ -208,34 +208,14 @@ where
         mut eq_fn: impl FnMut(&[u8], &[u8]) -> bool,
         hash_fn: impl Fn(&[u8]) -> u64,
     ) -> std::result::Result<usize, usize> {
-        if self.capacity == 0 {
-            return Err(0);
-        }
-
         let hash = hash_fn(key);
-        let mut index = hash as usize % self.capacity;
-
-        // Linear probing
-        for _ in 0..self.capacity {
-            let entry = self.entries.get_entry(index);
-            if entry.is_empty() {
-                // Empty slot, key not found
-                return Err(index);
+        self.entries.find_slot_with_hash(hash, |entry| {
+            if let Some(stored_key) = self.heap.get(entry.key_pos()) {
+                eq_fn(key, stored_key)
+            } else {
+                false
             }
-
-            if !entry.is_deleted() {
-                // Check if this is our key
-                if let Some(stored_key) = self.heap.get(entry.key_pos()) {
-                    if eq_fn(key, stored_key) {
-                        return Ok(index);
-                    }
-                }
-            }
-            // continue probing for deleted slots or non-matching keys
-            index = (index + 1) % self.capacity;
-        }
-
-        Err(self.capacity)
+        })
     }
 
     /// Insert a new entry at the given slot index
@@ -317,35 +297,66 @@ where
         } else {
             self.capacity * 2
         };
-        let mut new_entries = self.entries.new_empty(new_capacity);
-        let actual_new_capacity = new_entries.capacity();
 
-        // Re-hash all existing entries into the new larger array
-        for i in 0..self.capacity {
-            let entry = *self.entries.get_entry(i);
-            if entry.is_occupied() {
-                let key_data = self
-                    .heap
-                    .get(entry.key_pos())
-                    .expect("key must exist for occupied entry");
+        // For single array implementation, fall back to complete rehashing
+        // For double array implementation, use incremental resizing
+        if self.entries.is_resizing() {
+            // Already in the middle of a resize, complete it
+            self.entries.complete_resize()?;
+        } else {
+            // Start incremental resize
+            self.entries.start_resize(new_capacity)?;
+        }
 
-                let key_data = K::bytes_actual(key_data);
-                let mut hasher = self.hasher.build_hasher();
-                let hash = <K as BytesEncode>::hash_alt(key_data, &mut hasher);
-                let mut index = hash as usize % actual_new_capacity;
+        // If using double array, we can do incremental rehashing with proper key hashing
+        // For single array, we need to do complete rehashing.
+        if !self.entries.is_resizing() {
+            // Single array implementation: do complete rehashing as before
+            let mut new_entries = self.entries.new_empty(new_capacity);
+            let actual_new_capacity = new_entries.capacity();
 
-                // Linear probing in the new_entries array
-                loop {
-                    if new_entries.get_entry(index).is_empty() {
-                        new_entries.set_entry(index, entry);
-                        break;
+            // Re-hash all existing entries into the new larger array
+            for i in 0..self.capacity {
+                let entry = *self.entries.get_entry(i);
+                if entry.is_occupied() {
+                    let key_data = self
+                        .heap
+                        .get(entry.key_pos())
+                        .expect("key must exist for occupied entry");
+
+                    let key_data = K::bytes_actual(key_data);
+                    let mut hasher = self.hasher.build_hasher();
+                    let hash = <K as BytesEncode>::hash_alt(key_data, &mut hasher);
+                    let mut index = hash as usize % actual_new_capacity;
+
+                    // Linear probing in the new_entries array
+                    loop {
+                        if new_entries.get_entry(index).is_empty() {
+                            new_entries.set_entry(index, entry);
+                            break;
+                        }
+                        index = (index + 1) % actual_new_capacity;
                     }
-                    index = (index + 1) % actual_new_capacity;
                 }
             }
+            self.entries = new_entries;
+            self.capacity = actual_new_capacity;
+        } else {
+            // Double array implementation: do initial batch of incremental rehashing with proper hashing
+            let _rehashed_count = self.entries.incremental_rehash_with_hasher(8, |key_pos, _value_pos| {
+                let key_data = self
+                    .heap
+                    .get(key_pos)
+                    .expect("key must exist for occupied entry");
+                let key_data = K::bytes_actual(key_data);
+                let mut hasher = self.hasher.build_hasher();
+                <K as BytesEncode>::hash_alt(key_data, &mut hasher)
+            });
+            
+            // Update capacity to the effective capacity
+            self.capacity = self.entries.effective_capacity();
         }
-        self.entries = new_entries;
-        self.capacity = actual_new_capacity;
+
         Ok(())
     }
 
@@ -373,6 +384,19 @@ where
         value_bytes: &[u8],
         value_len: Option<usize>,
     ) -> Result<Option<<V as BytesDecode<'_>>::DItem>> {
+        // If we're in the middle of a resize, do some incremental rehashing
+        if self.entries.is_resizing() {
+            let _rehashed_count = self.entries.incremental_rehash_with_hasher(2, |key_pos, _value_pos| {
+                let key_data = self
+                    .heap
+                    .get(key_pos)
+                    .expect("key must exist for occupied entry");
+                let key_data = K::bytes_actual(key_data);
+                let mut hasher = self.hasher.build_hasher();
+                <K as BytesEncode>::hash_alt(key_data, &mut hasher)
+            });
+        }
+        
         match self.find_slot_inner(key_bytes) {
             Err(slot_idx) => {
                 // Found an empty slot, insert new key-value pair
@@ -1696,7 +1720,7 @@ mod tests {
         
         let initial_capacity = map.capacity();
         
-        // Insert enough items to trigger resize
+        // Insert enough items to trigger multiple resize operations
         let mut keys_values = Vec::new();
         for i in 0u32..50 {
             let key = format!("key_{i}");
@@ -1721,18 +1745,61 @@ mod tests {
         assert!(map.capacity() > initial_capacity, 
             "Expected capacity {} > initial {}", map.capacity(), initial_capacity);
         
-        // All items should still be accessible
+        // Verify all keys and values are still accessible
         for (key, value) in &keys_values {
             assert_eq!(
                 map.get(key.as_bytes()).unwrap(), 
                 Some(value.as_bytes()),
-                "Failed to retrieve key {key} after all insertions"
+                "key: {key}"
             );
         }
         
         assert_eq!(map.len(), keys_values.len());
     }
 
+    #[test]
+    fn test_double_array_iterator_across_resize() {
+        let mut map: BytesHM = DiskHashMap::new_with_double_array();
+        
+        // Insert initial data
+        let mut expected_items = std::collections::HashSet::new();
+        for i in 0u32..15 {
+            let key = format!("key_{i}");
+            let value = format!("value_{i}");
+            map.insert(key.as_bytes(), value.as_bytes()).unwrap();
+            expected_items.insert((key, value));
+        }
+        
+        // Verify iterator before resize
+        let mut iter_items = std::collections::HashSet::new();
+        for result in map.iter() {
+            let (key_bytes, value_bytes) = result.unwrap();
+            let key = String::from_utf8(key_bytes.to_vec()).unwrap();
+            let value = String::from_utf8(value_bytes.to_vec()).unwrap();
+            iter_items.insert((key, value));
+        }
+        assert_eq!(iter_items, expected_items);
+        
+        // Force resize by adding more items
+        for i in 15u32..25 {
+            let key = format!("key_{i}");
+            let value = format!("value_{i}");
+            map.insert(key.as_bytes(), value.as_bytes()).unwrap();
+            expected_items.insert((key, value));
+        }
+        
+        // Verify iterator after resize
+        iter_items.clear();
+        for result in map.iter() {
+            let (key_bytes, value_bytes) = result.unwrap();
+            let key = String::from_utf8(key_bytes.to_vec()).unwrap();
+            let value = String::from_utf8(value_bytes.to_vec()).unwrap();
+            iter_items.insert((key, value));
+        }
+        assert_eq!(iter_items, expected_items);
+        assert_eq!(iter_items.len(), 25);
+    }
+    
     #[test]
     fn test_double_array_resize_state_transitions() {
         let mut map: DiskHashMap<Native<u64>, Native<u64>, VecStore, FxBuildHasher> = 

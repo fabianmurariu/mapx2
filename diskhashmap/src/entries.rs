@@ -77,6 +77,16 @@ pub trait EntriesStorage<BS: ByteStore>: Index<usize, Output = Entry> + IndexMut
         0 // No-op for single array
     }
 
+    /// Performs incremental rehashing with access to key data for proper hashing
+    /// The closure receives (key_pos, value_pos) and should return the new hash
+    fn incremental_rehash_with_hasher<F>(&mut self, max_entries: usize, _hash_fn: F) -> usize 
+    where 
+        F: Fn(crate::HeapIdx, crate::HeapIdx) -> u64,
+    {
+        // Default implementation falls back to basic incremental_rehash
+        self.incremental_rehash(max_entries)
+    }
+
     /// Completes the resize operation (for double array implementation)
     fn complete_resize(&mut self) -> Result<()> {
         Ok(()) // No-op for single array
@@ -97,6 +107,39 @@ pub trait EntriesStorage<BS: ByteStore>: Index<usize, Output = Entry> + IndexMut
     /// Sets an entry at the given index, handling resize state
     fn set_entry(&mut self, index: usize, entry: Entry) {
         self[index] = entry;
+    }
+
+    /// Find a slot for the given key hash, returning Ok(index) if found, Err(empty_index) if not found
+    /// This method handles the complexity of searching in both old and new arrays during resize
+    fn find_slot_with_hash<F>(&self, hash: u64, mut key_matcher: F) -> std::result::Result<usize, usize>
+    where
+        F: FnMut(&Entry) -> bool,
+    {
+        // Default implementation for single array
+        let capacity = self.capacity();
+        if capacity == 0 {
+            return Err(0);
+        }
+        
+        let mut index = hash as usize % capacity;
+        // Linear probing
+        for _ in 0..capacity {
+            let entry = self.get_entry(index);
+            if entry.is_empty() {
+                // Empty slot, key not found
+                return Err(index);
+            }
+            if !entry.is_deleted() {
+                // Check if this is our key
+                if key_matcher(entry) {
+                    return Ok(index);
+                }
+            }
+            // continue probing for deleted slots or non-matching keys
+            index = (index + 1) % capacity;
+        }
+        // Table is full
+        Err(0)
     }
 
     /// Iterator over all occupied entries (for iteration support)
@@ -396,6 +439,16 @@ impl<BS: ByteStore> EntriesStorage<BS> for EntriesImpl<BS> {
         }
     }
 
+    fn incremental_rehash_with_hasher<F>(&mut self, max_entries: usize, hash_fn: F) -> usize 
+    where 
+        F: Fn(crate::HeapIdx, crate::HeapIdx) -> u64,
+    {
+        match self {
+            EntriesImpl::Single(entries) => entries.incremental_rehash_with_hasher(max_entries, hash_fn),
+            EntriesImpl::Double(entries) => entries.incremental_rehash_with_hasher(max_entries, hash_fn),
+        }
+    }
+
     fn complete_resize(&mut self) -> Result<()> {
         match self {
             EntriesImpl::Single(entries) => entries.complete_resize(),
@@ -421,6 +474,16 @@ impl<BS: ByteStore> EntriesStorage<BS> for EntriesImpl<BS> {
         match self {
             EntriesImpl::Single(entries) => entries.set_entry(index, entry),
             EntriesImpl::Double(entries) => entries.set_entry(index, entry),
+        }
+    }
+
+    fn find_slot_with_hash<F>(&self, hash: u64, key_matcher: F) -> std::result::Result<usize, usize>
+    where
+        F: FnMut(&Entry) -> bool,
+    {
+        match self {
+            EntriesImpl::Single(entries) => entries.find_slot_with_hash(hash, key_matcher),
+            EntriesImpl::Double(entries) => entries.find_slot_with_hash(hash, key_matcher),
         }
     }
 
@@ -680,6 +743,54 @@ impl<BS: ByteStore> EntriesStorage<BS> for DoubleArrayEntries<BS> {
         self.incremental_rehash_internal(entries_to_rehash).unwrap_or(0)
     }
 
+    fn incremental_rehash_with_hasher<F>(&mut self, max_entries: usize, hash_fn: F) -> usize 
+    where 
+        F: Fn(crate::HeapIdx, crate::HeapIdx) -> u64,
+    {
+        if self.old_entries.is_none() {
+            return 0; // Not resizing
+        }
+        
+        let entries_to_rehash = std::cmp::min(max_entries, self.rehash_batch_size);
+        let mut rehashed = 0;
+        let old_capacity = self.old_entries.as_ref().unwrap().capacity();
+        
+        while rehashed < entries_to_rehash && self.rehash_progress < old_capacity {
+            let entry = self.old_entries.as_ref().unwrap()[self.rehash_progress];
+            
+            if entry.is_occupied() {
+                // Calculate proper hash using the provided hash function
+                let hash = hash_fn(entry.key_pos(), entry.value_pos());
+                let new_capacity = self.new_entries.capacity();
+                let mut index = hash as usize % new_capacity;
+                
+                // Find insertion slot in new array using linear probing
+                loop {
+                    if !self.new_entries[index].is_occupied() {
+                        self.new_entries[index] = entry;
+                        break;
+                    }
+                    index = (index + 1) % new_capacity;
+                }
+                
+                // Clear the old entry so it's not counted twice during iteration
+                self.old_entries.as_mut().unwrap()[self.rehash_progress] = Entry::new();
+                
+                rehashed += 1;
+            }
+            
+            self.rehash_progress += 1;
+        }
+        
+        // If we've finished rehashing all entries, clean up the old array
+        if self.rehash_progress >= old_capacity {
+            self.old_entries = None;
+            self.rehash_progress = 0;
+        }
+        
+        rehashed
+    }
+
     fn complete_resize(&mut self) -> Result<()> {
         // Finish any remaining rehashing
         if let Some(ref old_entries) = self.old_entries {
@@ -710,6 +821,71 @@ impl<BS: ByteStore> EntriesStorage<BS> for DoubleArrayEntries<BS> {
             (true, false) => self.occupied_count -= 1,
             _ => {} // No change
         }
+    }
+
+    fn find_slot_with_hash<F>(&self, hash: u64, mut key_matcher: F) -> std::result::Result<usize, usize>
+    where
+        F: FnMut(&Entry) -> bool,
+    {
+        let new_capacity = self.new_entries.capacity();
+        if new_capacity == 0 {
+            return Err(0);
+        }
+        
+        // First search the new array
+        let mut index = hash as usize % new_capacity;
+        let start_index = index;
+        let mut empty_slot = None;
+        
+        loop {
+            let entry = &self.new_entries[index];
+            if entry.is_empty() {
+                // Remember the first empty slot we find
+                if empty_slot.is_none() {
+                    empty_slot = Some(index);
+                }
+                break;
+            }
+            if !entry.is_deleted() {
+                // Check if this is our key
+                if key_matcher(entry) {
+                    return Ok(index);
+                }
+            }
+            index = (index + 1) % new_capacity;
+            // Avoid infinite loop
+            if index == start_index {
+                break;
+            }
+        }
+
+        // If resizing, check old array for unrelocated entries
+        if let Some(ref old_entries) = self.old_entries {
+            let old_capacity = old_entries.capacity();
+            let old_start_index = (hash as usize) % old_capacity;
+            let mut old_index = old_start_index;
+            
+            for _ in 0..old_capacity {
+                let entry = &old_entries[old_index];
+                if entry.is_empty() {
+                    break;
+                }
+                if !entry.is_deleted() {
+                    if key_matcher(entry) {
+                        // Return index offset by new_capacity to indicate it's in old array
+                        return Ok(old_index + new_capacity);
+                    }
+                }
+                old_index = (old_index + 1) % old_capacity;
+                // Avoid infinite loop
+                if old_index == old_start_index {
+                    break;
+                }
+            }
+        }
+        
+        // Key not found, return the first empty slot we found (or recalculate if none found)
+        Err(empty_slot.unwrap_or(hash as usize % new_capacity))
     }
 
     fn next_probe_index(&self, current: usize, _hash: u64) -> usize {
