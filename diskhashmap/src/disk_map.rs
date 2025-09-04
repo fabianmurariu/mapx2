@@ -943,6 +943,34 @@ mod tests {
                     MapEntry::Vacant(_) => panic!("Expected occupied entry"),
                 }
             }
+
+            // Verify iterator returns exactly the inserted items at this point
+            let mut iter_items = std::collections::HashSet::new();
+            for result in map.iter() {
+                let (key_bytes, value_bytes) = result.unwrap();
+                iter_items.insert((key_bytes.to_vec(), value_bytes.to_vec()));
+            }
+
+            // Convert already_inserted to HashSet for comparison
+            let expected_items: std::collections::HashSet<_> = already_inserted.iter().cloned().collect();
+
+            // Verify iterator has exactly the same items as inserted so far
+            assert_eq!(iter_items.len(), expected_items.len(), 
+                "Iterator count mismatch after inserting {} items", already_inserted.len());
+            
+            // Check every item from iterator exists in expected
+            for (key, value) in &iter_items {
+                assert!(expected_items.contains(&(key.clone(), value.clone())), 
+                    "Iterator returned unexpected item: key={:?}, value={:?} after {} insertions", 
+                    key, value, already_inserted.len());
+            }
+
+            // Check every expected item exists in iterator results
+            for (key, value) in &expected_items {
+                assert!(iter_items.contains(&(key.clone(), value.clone())), 
+                    "Iterator missing expected item: key={:?}, value={:?} after {} insertions", 
+                    key, value, already_inserted.len());
+            }
         }
 
         // Check the size of the map
@@ -1005,6 +1033,34 @@ mod tests {
                     }
                     MapEntry::Vacant(_) => panic!("Expected occupied entry"),
                 }
+            }
+
+            // Verify iterator returns exactly the inserted items at this point
+            let mut iter_items = std::collections::HashSet::new();
+            for result in map.iter() {
+                let (key, value) = result.unwrap();
+                iter_items.insert((key, value));
+            }
+
+            // Convert already_inserted to HashSet for comparison
+            let expected_items: std::collections::HashSet<_> = already_inserted.iter().cloned().collect();
+
+            // Verify iterator has exactly the same items as inserted so far
+            assert_eq!(iter_items.len(), expected_items.len(), 
+                "Iterator count mismatch after inserting {} items", already_inserted.len());
+            
+            // Check every item from iterator exists in expected
+            for (key, value) in &iter_items {
+                assert!(expected_items.contains(&(*key, *value)), 
+                    "Iterator returned unexpected item: key={:?}, value={:?} after {} insertions", 
+                    key, value, already_inserted.len());
+            }
+
+            // Check every expected item exists in iterator results
+            for (key, value) in &expected_items {
+                assert!(iter_items.contains(&(*key, *value)), 
+                    "Iterator missing expected item: key={:?}, value={:?} after {} insertions", 
+                    key, value, already_inserted.len());
             }
         }
 
@@ -1668,6 +1724,34 @@ mod tests {
                     MapEntry::Vacant(_) => panic!("Expected occupied entry"),
                 }
             }
+
+            // Verify iterator returns exactly the inserted items at this point
+            let mut iter_items = std::collections::HashSet::new();
+            for result in map.iter() {
+                let (key_bytes, value_bytes) = result.unwrap();
+                iter_items.insert((key_bytes.to_vec(), value_bytes.to_vec()));
+            }
+
+            // Convert already_inserted to HashSet for comparison
+            let expected_items: std::collections::HashSet<_> = already_inserted.iter().cloned().collect();
+
+            // Verify iterator has exactly the same items as inserted so far
+            assert_eq!(iter_items.len(), expected_items.len(), 
+                "Iterator count mismatch after {} insertions", already_inserted.len());
+            
+            // Check every item from iterator exists in expected
+            for (key, value) in &iter_items {
+                assert!(expected_items.contains(&(key.clone(), value.clone())), 
+                    "Iterator returned unexpected item after {} insertions: key={:?}, value={:?}", 
+                    already_inserted.len(), key, value);
+            }
+
+            // Check every expected item exists in iterator results
+            for (key, value) in &expected_items {
+                assert!(iter_items.contains(&(key.clone(), value.clone())), 
+                    "Iterator missing expected item after {} insertions: key={:?}, value={:?}", 
+                    already_inserted.len(), key, value);
+            }
         }
 
         // Check the size of the map
@@ -1736,6 +1820,34 @@ mod tests {
                     }
                     MapEntry::Vacant(_) => panic!("Expected occupied entry"),
                 }
+            }
+
+            // Verify iterator returns exactly the inserted items at this point
+            let mut iter_items = std::collections::HashSet::new();
+            for result in map.iter() {
+                let (key, value) = result.unwrap();
+                iter_items.insert((key, value));
+            }
+
+            // Convert already_inserted to HashSet for comparison
+            let expected_items: std::collections::HashSet<_> = already_inserted.iter().cloned().collect();
+
+            // Verify iterator has exactly the same items as inserted so far
+            assert_eq!(iter_items.len(), expected_items.len(), 
+                "Iterator count mismatch after {} insertions", already_inserted.len());
+            
+            // Check every item from iterator exists in expected
+            for (key, value) in &iter_items {
+                assert!(expected_items.contains(&(*key, *value)), 
+                    "Iterator returned unexpected item after {} insertions: key={:?}, value={:?}", 
+                    already_inserted.len(), key, value);
+            }
+
+            // Check every expected item exists in iterator results
+            for (key, value) in &expected_items {
+                assert!(iter_items.contains(&(*key, *value)), 
+                    "Iterator missing expected item after {} insertions: key={:?}, value={:?}", 
+                    already_inserted.len(), key, value);
             }
         }
 
