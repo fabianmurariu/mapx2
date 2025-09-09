@@ -346,13 +346,6 @@ where
     pub fn is_empty(&self) -> bool {
         self.shards.iter().all(|shard| shard.read().is_empty())
     }
-
-    /// Clear all entries from the map.
-    /// Note: Current diskhashmap doesn't support clear operation
-    pub fn clear(&self) {
-        // TODO: Implement when diskhashmap supports clear
-        // For now, this is a no-op
-    }
 }
 
 #[cfg(test)]
@@ -492,30 +485,6 @@ mod tests {
         // Verify total count
         assert_eq!(shard_usage.iter().sum::<usize>(), 1000);
         assert_eq!(map.len(), 1000);
-        Ok(())
-    }
-
-    #[test]
-    fn test_clear() -> Result<()> {
-        let temp_dir = TempDir::new().unwrap();
-        let map: DiskDashMap<Str, Str, MMapFile, FxBuildHasher> =
-            DiskDashMap::new_in(temp_dir.path()).unwrap();
-
-        // Insert some data
-        for i in 0..100 {
-            let key = format!("key_{i}");
-            let value = format!("value_{i}");
-            map.insert(&key, &value)?;
-        }
-        assert_eq!(map.len(), 100);
-
-        // Clear and verify (not supported yet)
-        map.clear();
-        // Clear is not implemented yet, so data should still be there
-        assert_eq!(map.len(), 100);
-        assert!(!map.is_empty());
-        let key_0 = "key_0".to_string();
-        assert!(map.contains_key(&key_0)?);
         Ok(())
     }
 
