@@ -412,13 +412,21 @@ mod tests {
         }
 
         // Verify all entries exist
-        for i in 0..10 {
-            for j in 0..100 {
-                let key = format!("key_{i}_{j}");
-                let expected_value = format!("value_{i}_{j}");
-                assert_eq!(map.get(&key)?.unwrap().value()?, expected_value);
+        let check_fn = |map: &DiskDashMap<Str, Str, MMapFile, FxBuildHasher>| -> Result<()> {
+            for i in 0..10 {
+                for j in 0..100 {
+                    let key = format!("key_{i}_{j}");
+                    let expected_value = format!("value_{i}_{j}");
+                    assert_eq!(map.get(&key)?.unwrap().value()?, expected_value);
+                }
             }
-        }
+            Ok(())
+        };
+
+        check_fn(&map)?;
+
+        let load_map = DiskDashMap::load_from(temp_dir.path()).unwrap();
+        check_fn(&load_map)?;
 
         assert_eq!(map.len(), 1000);
         Ok(())

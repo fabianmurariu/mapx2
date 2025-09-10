@@ -1,7 +1,7 @@
 use core::{mem, ptr};
 use std::{marker::PhantomData, mem::ManuallyDrop};
 
-use lock_api::{RawMutex, MutexGuard};
+use lock_api::{MutexGuard, RawMutex};
 
 pub const fn ptr_size_bits() -> usize {
     mem::size_of::<usize>() * 8

@@ -1,40 +1,54 @@
 pub mod has_iter;
-pub mod mutex;
-pub mod rwlock;
+pub mod util;
 
 use std::{ops::Deref, sync::Arc};
 
 use parking_lot::RwLock;
-pub use rwlock::LockedT;
 
 use crate::has_iter::HasIter;
 
-trait GenRc<T>: Clone {}
+pub trait GenRc<T>: Clone {
+    fn new(t: T) -> Self;
+}
 
-pub struct LockedIter2<'a, L: Barier>
+impl<T> GenRc<T> for Arc<T> {
+    fn new(t: T) -> Self {
+        Arc::new(t)
+    }
+}
+
+impl<T> GenRc<T> for std::rc::Rc<T> {
+    fn new(t: T) -> Self {
+        std::rc::Rc::new(t)
+    }
+}
+
+pub struct LockedIter2<'a, Rc, L: Barier>
 where
     <L as Barier>::T: 'a,
+    Rc: GenRc<L::DetachedGuard<'a>>,
 {
-    guard: Arc<L::DetachedGuard<'a>>,
+    guard: Rc,
     iter: <<L as Barier>::T as HasIter>::Iter<'a>,
 }
 
-impl<'a, L: Barier> LockedIter2<'a, L> {
-    pub(crate) fn new(guard: L::Guard<'a, L::T>) -> LockedIter2<'a, L> {
+impl<'a, Rc: GenRc<L::DetachedGuard<'a>>, L: Barier> LockedIter2<'a, Rc, L> {
+    pub(crate) fn new(guard: L::Guard<'a, L::T>) -> LockedIter2<'a, Rc, L> {
         let (guard, t) = unsafe { L::DetachedGuard::detach_from::<L::T>(guard) };
         Self {
-            guard: Arc::new(guard),
+            guard: Rc::new(guard),
             iter: t.iter(),
         }
     }
 }
 
-pub struct ArcEntry<DG, A> {
-    _guard: Arc<DG>,
+pub struct LockedEntry<Rc: GenRc<DG>, DG, A> {
+    _guard: Rc,
     t: A,
+    _phantom: std::marker::PhantomData<DG>,
 }
 
-impl<DG, A> Deref for ArcEntry<DG, A> {
+impl<Rc: GenRc<DG>, DG, A> Deref for LockedEntry<Rc, DG, A> {
     type Target = A;
 
     fn deref(&self) -> &A {
@@ -42,13 +56,16 @@ impl<DG, A> Deref for ArcEntry<DG, A> {
     }
 }
 
-impl<'a, L: Barier> Iterator for LockedIter2<'a, L> {
-    type Item = ArcEntry<<L as Barier>::DetachedGuard<'a>, <L::T as HasIter>::Item<'a>>;
+impl<'a, Rc: GenRc<<L as Barier>::DetachedGuard<'a>>, L: Barier> Iterator
+    for LockedIter2<'a, Rc, L>
+{
+    type Item = LockedEntry<Rc, <L as Barier>::DetachedGuard<'a>, <L::T as HasIter>::Item<'a>>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.iter.next().map(|t| ArcEntry {
+        self.iter.next().map(|t| LockedEntry {
             _guard: self.guard.clone(),
             t,
+            _phantom: std::marker::PhantomData,
         })
     }
 }
@@ -78,11 +95,17 @@ pub trait DetachableGuard<'a> {
 }
 
 pub trait LockedIterExt<L: Barier> {
-    fn locked_iter(&self) -> LockedIter2<'_, L>;
+    fn arc_locked_iter(&self) -> LockedIter2<'_, Arc<L::DetachedGuard<'_>>, L>;
+
+    fn rc_locked_iter(&self) -> LockedIter2<'_, std::rc::Rc<L::DetachedGuard<'_>>, L>;
 }
 
 impl<L: Barier> LockedIterExt<L> for L {
-    fn locked_iter(&self) -> LockedIter2<'_, L> {
+    fn arc_locked_iter(&self) -> LockedIter2<'_, Arc<L::DetachedGuard<'_>>, L> {
+        LockedIter2::new(self.read_guard())
+    }
+
+    fn rc_locked_iter(&self) -> LockedIter2<'_, std::rc::Rc<L::DetachedGuard<'_>>, L> {
         LockedIter2::new(self.read_guard())
     }
 }
@@ -97,7 +120,7 @@ where
     where
         A: 'a;
     type DetachedGuard<'a>
-        = crate::rwlock::util::RwLockReadGuardDetached<'a, parking_lot::RawRwLock>
+        = crate::util::rwlock::RwLockReadGuardDetached<'a, parking_lot::RawRwLock>
     where
         T: 'a;
 
@@ -107,7 +130,7 @@ where
 }
 
 impl<'a> DetachableGuard<'a>
-    for crate::rwlock::util::RwLockReadGuardDetached<'a, parking_lot::RawRwLock>
+    for crate::util::rwlock::RwLockReadGuardDetached<'a, parking_lot::RawRwLock>
 {
     type Guard<'b, T>
         = parking_lot::RwLockReadGuard<'b, T>
@@ -118,7 +141,7 @@ impl<'a> DetachableGuard<'a>
     where
         Self: Sized,
     {
-        unsafe { crate::rwlock::util::RwLockReadGuardDetached::detach_from(guard) }
+        unsafe { crate::util::rwlock::RwLockReadGuardDetached::detach_from(guard) }
     }
 }
 
@@ -130,7 +153,7 @@ mod test {
     fn trait_adds_locked_iter_fn_vec() {
         let locked_vec = parking_lot::RwLock::new(vec![1, 2, 3]);
 
-        let iter = locked_vec.locked_iter();
+        let iter = locked_vec.arc_locked_iter();
 
         for (i, x) in iter.enumerate() {
             assert_eq!(**x, (i + 1) as i32);
@@ -142,7 +165,7 @@ mod test {
         let locked_array: lock_api::RwLock<parking_lot::RawRwLock, Box<[i32]>> =
             parking_lot::RwLock::new(Box::new([1, 2, 3]));
 
-        let iter = locked_array.locked_iter();
+        let iter = locked_array.rc_locked_iter();
 
         for (i, x) in iter.enumerate() {
             assert_eq!(**x, (i + 1) as i32);
