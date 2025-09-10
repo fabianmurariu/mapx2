@@ -624,9 +624,10 @@ impl<K, V, S> DiskHashMap<K, V, MMapFile, S>
 where
     S: BuildHasher + Default,
 {
-    pub fn new_in(path: &Path) -> io::Result<Self> {
+    pub fn new_in(path: impl AsRef<Path>) -> io::Result<Self> {
         const DEFAULT_ENTRIES_CAP: usize = 16;
 
+        let path = path.as_ref();
         let length_bytes = DEFAULT_ENTRIES_CAP * std::mem::size_of::<Entry>();
         let heap = Heap::new(path.join("heap"))?;
         let entries = FixedVec::<Entry, _>::new(MMapFile::new(path.join("entries"), length_bytes)?);
@@ -675,7 +676,8 @@ where
         })
     }
 
-    pub fn load_from(path: &Path) -> io::Result<Self> {
+    pub fn load_from(path: impl AsRef<Path>) -> io::Result<Self> {
+        let path = path.as_ref();
         let heap = Heap::load_from(path.join("heap"))?;
         let entries = FixedVec::<Entry, _>::new(MMapFile::from_file(path.join("entries"))?);
         let capacity = entries.capacity();
@@ -858,6 +860,7 @@ mod tests {
     use tempfile::tempdir;
 
     type BytesHM = DiskHashMap<Bytes, Bytes, VecStore, FxBuildHasher>;
+    type DiskBytesHM = DiskHashMap<Bytes, Bytes, MMapFile, FxBuildHasher>;
 
     // Legacy tests using raw byte API for backward compatibility
     #[test]
@@ -922,7 +925,8 @@ mod tests {
     }
 
     fn check_prop(hm: StdHashMap<Vec<u8>, Vec<u8>>) {
-        let mut map: BytesHM = DiskHashMap::new();
+        let temp_dir = tempdir().unwrap();
+        let mut map: DiskBytesHM = DiskHashMap::new_in(&temp_dir).unwrap();
 
         // Insert all key-value pairs from the StdHashMap
         let mut already_inserted = vec![];
@@ -952,63 +956,99 @@ mod tests {
             }
 
             // Convert already_inserted to HashSet for comparison
-            let expected_items: std::collections::HashSet<_> = already_inserted.iter().cloned().collect();
+            let expected_items: std::collections::HashSet<_> =
+                already_inserted.iter().cloned().collect();
 
             // Verify iterator has exactly the same items as inserted so far
-            assert_eq!(iter_items.len(), expected_items.len(), 
-                "Iterator count mismatch after inserting {} items", already_inserted.len());
-            
+            assert_eq!(
+                iter_items.len(),
+                expected_items.len(),
+                "Iterator count mismatch after inserting {} items",
+                already_inserted.len()
+            );
+
             // Check every item from iterator exists in expected
             for (key, value) in &iter_items {
-                assert!(expected_items.contains(&(key.clone(), value.clone())), 
-                    "Iterator returned unexpected item: key={:?}, value={:?} after {} insertions", 
-                    key, value, already_inserted.len());
+                assert!(
+                    expected_items.contains(&(key.clone(), value.clone())),
+                    "Iterator returned unexpected item: key={:?}, value={:?} after {} insertions",
+                    key,
+                    value,
+                    already_inserted.len()
+                );
             }
 
             // Check every expected item exists in iterator results
             for (key, value) in &expected_items {
-                assert!(iter_items.contains(&(key.clone(), value.clone())), 
-                    "Iterator missing expected item: key={:?}, value={:?} after {} insertions", 
-                    key, value, already_inserted.len());
+                assert!(
+                    iter_items.contains(&(key.clone(), value.clone())),
+                    "Iterator missing expected item: key={:?}, value={:?} after {} insertions",
+                    key,
+                    value,
+                    already_inserted.len()
+                );
             }
         }
 
-        // Check the size of the map
-        assert_eq!(map.len(), hm.len());
+        let check_fn = |map: &DiskBytesHM,
+                        hm: &StdHashMap<Vec<u8>, Vec<u8>>,
+                        already_inserted: &Vec<(Vec<u8>, Vec<u8>)>| {
+            // Check the size of the map
+            assert_eq!(map.len(), hm.len());
 
-        // Check that all values can be retrieved
-        for (k, v) in hm.iter() {
+            // Check that all values can be retrieved
+            for (k, v) in hm.iter() {
+                assert_eq!(
+                    map.get(k.as_slice()).unwrap(),
+                    Some(v.as_slice()),
+                    "key: {k:?}"
+                );
+            }
+
+            // Verify iterator returns exactly the inserted items
+            let mut iter_items = std::collections::HashSet::new();
+            for result in map.iter() {
+                let (key_bytes, value_bytes) = result.unwrap();
+                iter_items.insert((key_bytes.to_vec(), value_bytes.to_vec()));
+            }
+
+            // Convert already_inserted to HashSet for comparison
+            let expected_items: std::collections::HashSet<_> =
+                already_inserted.into_iter().collect();
+
+            // Verify iterator has exactly the same items as inserted
             assert_eq!(
-                map.get(k.as_slice()).unwrap(),
-                Some(v.as_slice()),
-                "key: {k:?}"
+                iter_items.len(),
+                expected_items.len(),
+                "Iterator count mismatch"
             );
-        }
 
-        // Verify iterator returns exactly the inserted items
-        let mut iter_items = std::collections::HashSet::new();
-        for result in map.iter() {
-            let (key_bytes, value_bytes) = result.unwrap();
-            iter_items.insert((key_bytes.to_vec(), value_bytes.to_vec()));
-        }
+            // Check every item from iterator exists in expected
+            for (key, value) in &iter_items {
+                assert!(
+                    expected_items.contains(&(key.clone(), value.clone())),
+                    "Iterator returned unexpected item: key={:?}, value={:?}",
+                    key,
+                    value
+                );
+            }
 
-        // Convert already_inserted to HashSet for comparison
-        let expected_items: std::collections::HashSet<_> = already_inserted.into_iter().collect();
+            // Check every expected item exists in iterator results
+            for (key, value) in &expected_items {
+                assert!(
+                    iter_items.contains(&(key.clone(), value.clone())),
+                    "Iterator missing expected item: key={:?}, value={:?}",
+                    key,
+                    value
+                );
+            }
+        };
 
-        // Verify iterator has exactly the same items as inserted
-        assert_eq!(iter_items.len(), expected_items.len(), "Iterator count mismatch");
-        
-        // Check every item from iterator exists in expected
-        for (key, value) in &iter_items {
-            assert!(expected_items.contains(&(key.clone(), value.clone())), 
-                "Iterator returned unexpected item: key={:?}, value={:?}", key, value);
-        }
+        check_fn(&map, &hm, &already_inserted);
+        drop(map);
 
-        // Check every expected item exists in iterator results
-        for (key, value) in &expected_items {
-            assert!(iter_items.contains(&(key.clone(), value.clone())), 
-                "Iterator missing expected item: key={:?}, value={:?}", key, value);
-        }
+        let map = DiskHashMap::load_from(&temp_dir).unwrap();
+        check_fn(&map, &hm, &already_inserted);
     }
 
     fn check_prop_native(hm: StdHashMap<u64, u64>) {
@@ -1043,24 +1083,37 @@ mod tests {
             }
 
             // Convert already_inserted to HashSet for comparison
-            let expected_items: std::collections::HashSet<_> = already_inserted.iter().cloned().collect();
+            let expected_items: std::collections::HashSet<_> =
+                already_inserted.iter().cloned().collect();
 
             // Verify iterator has exactly the same items as inserted so far
-            assert_eq!(iter_items.len(), expected_items.len(), 
-                "Iterator count mismatch after inserting {} items", already_inserted.len());
-            
+            assert_eq!(
+                iter_items.len(),
+                expected_items.len(),
+                "Iterator count mismatch after inserting {} items",
+                already_inserted.len()
+            );
+
             // Check every item from iterator exists in expected
             for (key, value) in &iter_items {
-                assert!(expected_items.contains(&(*key, *value)), 
-                    "Iterator returned unexpected item: key={:?}, value={:?} after {} insertions", 
-                    key, value, already_inserted.len());
+                assert!(
+                    expected_items.contains(&(*key, *value)),
+                    "Iterator returned unexpected item: key={:?}, value={:?} after {} insertions",
+                    key,
+                    value,
+                    already_inserted.len()
+                );
             }
 
             // Check every expected item exists in iterator results
             for (key, value) in &expected_items {
-                assert!(iter_items.contains(&(*key, *value)), 
-                    "Iterator missing expected item: key={:?}, value={:?} after {} insertions", 
-                    key, value, already_inserted.len());
+                assert!(
+                    iter_items.contains(&(*key, *value)),
+                    "Iterator missing expected item: key={:?}, value={:?} after {} insertions",
+                    key,
+                    value,
+                    already_inserted.len()
+                );
             }
         }
 
@@ -1083,18 +1136,30 @@ mod tests {
         let expected_items: std::collections::HashSet<_> = already_inserted.into_iter().collect();
 
         // Verify iterator has exactly the same items as inserted
-        assert_eq!(iter_items.len(), expected_items.len(), "Iterator count mismatch");
-        
+        assert_eq!(
+            iter_items.len(),
+            expected_items.len(),
+            "Iterator count mismatch"
+        );
+
         // Check every item from iterator exists in expected
         for (key, value) in &iter_items {
-            assert!(expected_items.contains(&(*key, *value)), 
-                "Iterator returned unexpected item: key={:?}, value={:?}", key, value);
+            assert!(
+                expected_items.contains(&(*key, *value)),
+                "Iterator returned unexpected item: key={:?}, value={:?}",
+                key,
+                value
+            );
         }
 
         // Check every expected item exists in iterator results
         for (key, value) in &expected_items {
-            assert!(iter_items.contains(&(*key, *value)), 
-                "Iterator missing expected item: key={:?}, value={:?}", key, value);
+            assert!(
+                iter_items.contains(&(*key, *value)),
+                "Iterator missing expected item: key={:?}, value={:?}",
+                key,
+                value
+            );
         }
     }
 
@@ -1733,24 +1798,37 @@ mod tests {
             }
 
             // Convert already_inserted to HashSet for comparison
-            let expected_items: std::collections::HashSet<_> = already_inserted.iter().cloned().collect();
+            let expected_items: std::collections::HashSet<_> =
+                already_inserted.iter().cloned().collect();
 
             // Verify iterator has exactly the same items as inserted so far
-            assert_eq!(iter_items.len(), expected_items.len(), 
-                "Iterator count mismatch after {} insertions", already_inserted.len());
-            
+            assert_eq!(
+                iter_items.len(),
+                expected_items.len(),
+                "Iterator count mismatch after {} insertions",
+                already_inserted.len()
+            );
+
             // Check every item from iterator exists in expected
             for (key, value) in &iter_items {
-                assert!(expected_items.contains(&(key.clone(), value.clone())), 
-                    "Iterator returned unexpected item after {} insertions: key={:?}, value={:?}", 
-                    already_inserted.len(), key, value);
+                assert!(
+                    expected_items.contains(&(key.clone(), value.clone())),
+                    "Iterator returned unexpected item after {} insertions: key={:?}, value={:?}",
+                    already_inserted.len(),
+                    key,
+                    value
+                );
             }
 
             // Check every expected item exists in iterator results
             for (key, value) in &expected_items {
-                assert!(iter_items.contains(&(key.clone(), value.clone())), 
-                    "Iterator missing expected item after {} insertions: key={:?}, value={:?}", 
-                    already_inserted.len(), key, value);
+                assert!(
+                    iter_items.contains(&(key.clone(), value.clone())),
+                    "Iterator missing expected item after {} insertions: key={:?}, value={:?}",
+                    already_inserted.len(),
+                    key,
+                    value
+                );
             }
         }
 
@@ -1777,18 +1855,30 @@ mod tests {
         let expected_items: std::collections::HashSet<_> = already_inserted.into_iter().collect();
 
         // Verify iterator has exactly the same items as inserted
-        assert_eq!(iter_items.len(), expected_items.len(), "Iterator count mismatch");
-        
+        assert_eq!(
+            iter_items.len(),
+            expected_items.len(),
+            "Iterator count mismatch"
+        );
+
         // Check every item from iterator exists in expected
         for (key, value) in &iter_items {
-            assert!(expected_items.contains(&(key.clone(), value.clone())), 
-                "Iterator returned unexpected item: key={:?}, value={:?}", key, value);
+            assert!(
+                expected_items.contains(&(key.clone(), value.clone())),
+                "Iterator returned unexpected item: key={:?}, value={:?}",
+                key,
+                value
+            );
         }
 
         // Check every expected item exists in iterator results
         for (key, value) in &expected_items {
-            assert!(iter_items.contains(&(key.clone(), value.clone())), 
-                "Iterator missing expected item: key={:?}, value={:?}", key, value);
+            assert!(
+                iter_items.contains(&(key.clone(), value.clone())),
+                "Iterator missing expected item: key={:?}, value={:?}",
+                key,
+                value
+            );
         }
 
         // Verify that we're actually using double array entries
@@ -1830,24 +1920,37 @@ mod tests {
             }
 
             // Convert already_inserted to HashSet for comparison
-            let expected_items: std::collections::HashSet<_> = already_inserted.iter().cloned().collect();
+            let expected_items: std::collections::HashSet<_> =
+                already_inserted.iter().cloned().collect();
 
             // Verify iterator has exactly the same items as inserted so far
-            assert_eq!(iter_items.len(), expected_items.len(), 
-                "Iterator count mismatch after {} insertions", already_inserted.len());
-            
+            assert_eq!(
+                iter_items.len(),
+                expected_items.len(),
+                "Iterator count mismatch after {} insertions",
+                already_inserted.len()
+            );
+
             // Check every item from iterator exists in expected
             for (key, value) in &iter_items {
-                assert!(expected_items.contains(&(*key, *value)), 
-                    "Iterator returned unexpected item after {} insertions: key={:?}, value={:?}", 
-                    already_inserted.len(), key, value);
+                assert!(
+                    expected_items.contains(&(*key, *value)),
+                    "Iterator returned unexpected item after {} insertions: key={:?}, value={:?}",
+                    already_inserted.len(),
+                    key,
+                    value
+                );
             }
 
             // Check every expected item exists in iterator results
             for (key, value) in &expected_items {
-                assert!(iter_items.contains(&(*key, *value)), 
-                    "Iterator missing expected item after {} insertions: key={:?}, value={:?}", 
-                    already_inserted.len(), key, value);
+                assert!(
+                    iter_items.contains(&(*key, *value)),
+                    "Iterator missing expected item after {} insertions: key={:?}, value={:?}",
+                    already_inserted.len(),
+                    key,
+                    value
+                );
             }
         }
 
@@ -1870,18 +1973,30 @@ mod tests {
         let expected_items: std::collections::HashSet<_> = already_inserted.into_iter().collect();
 
         // Verify iterator has exactly the same items as inserted
-        assert_eq!(iter_items.len(), expected_items.len(), "Iterator count mismatch");
-        
+        assert_eq!(
+            iter_items.len(),
+            expected_items.len(),
+            "Iterator count mismatch"
+        );
+
         // Check every item from iterator exists in expected
         for (key, value) in &iter_items {
-            assert!(expected_items.contains(&(*key, *value)), 
-                "Iterator returned unexpected item: key={:?}, value={:?}", key, value);
+            assert!(
+                expected_items.contains(&(*key, *value)),
+                "Iterator returned unexpected item: key={:?}, value={:?}",
+                key,
+                value
+            );
         }
 
         // Check every expected item exists in iterator results
         for (key, value) in &expected_items {
-            assert!(iter_items.contains(&(*key, *value)), 
-                "Iterator missing expected item: key={:?}, value={:?}", key, value);
+            assert!(
+                iter_items.contains(&(*key, *value)),
+                "Iterator missing expected item: key={:?}, value={:?}",
+                key,
+                value
+            );
         }
 
         // Verify that we're actually using double array entries
@@ -2006,7 +2121,6 @@ mod tests {
             iter_items.insert((key, value));
         }
 
-
         assert_eq!(iter_items, expected_items);
 
         // Force resize by adding more items
@@ -2025,7 +2139,6 @@ mod tests {
             let value = String::from_utf8(value_bytes.to_vec()).unwrap();
             iter_items.insert((key, value));
         }
-
 
         assert_eq!(iter_items, expected_items);
         assert_eq!(iter_items.len(), 25);
