@@ -180,6 +180,29 @@ impl<S: ByteStore> Slab<S> {
     pub fn is_empty(&self) -> bool {
         self.count == 0
     }
+
+    /// Set data at a specific offset within the slab
+    /// Returns true if successful, false if offset is out of bounds or data doesn't fit
+    pub fn set(&mut self, offset: u64, data: &[u8]) -> bool {
+        let offset = offset as usize;
+        if offset >= self.count || data.len() > self.element_size {
+            return false;
+        }
+
+        let pos_range = self.resolve_pos(offset);
+        let target_slice = &mut self.store.as_mut()[pos_range];
+        
+        // Clear the existing data first
+        target_slice.fill(0);
+        
+        // Copy the new data
+        if data.len() <= target_slice.len() {
+            target_slice[..data.len()].copy_from_slice(data);
+            true
+        } else {
+            false
+        }
+    }
 }
 
 pub struct PageEntry<'a, S: ByteStore> {
@@ -257,10 +280,15 @@ impl Heap<VecStore> {
             slabs.push(None);
         }
 
-        Self {
+        let mut heap = Self {
             slabs,
             base_path: PathBuf::new(),
-        }
+        };
+        
+        // Reserve page_0 for rehashing progress tracking
+        heap.reserve_progress_page();
+        
+        heap
     }
 }
 
@@ -274,7 +302,12 @@ impl Heap<MMapFile> {
             slabs.push(None);
         }
 
-        Ok(Self { slabs, base_path })
+        let mut heap = Self { slabs, base_path };
+        
+        // Reserve page_0 for rehashing progress tracking
+        heap.reserve_progress_page();
+        
+        Ok(heap)
     }
 
     pub fn new_with_capacity<P: AsRef<Path>>(
@@ -302,7 +335,12 @@ impl Heap<MMapFile> {
             }
         }
 
-        Ok(Self { slabs, base_path })
+        let mut heap = Self { slabs, base_path };
+        
+        // Reserve page_0 for rehashing progress tracking
+        heap.reserve_progress_page();
+        
+        Ok(heap)
     }
 
     pub fn load_from<P: AsRef<Path>>(base_path: P) -> io::Result<Self> {
@@ -384,6 +422,19 @@ where
         self.len() == 0
     }
 
+    /// Set data at a specific HeapIdx
+    /// Returns true if successful, false if the index is invalid or data doesn't fit
+    pub fn set(&mut self, index: HeapIdx, data: &[u8]) -> bool {
+        let category = index.category() as usize;
+        let offset = index.offset();
+
+        if let Some(slab) = self.slabs.get_mut(category).and_then(|s| s.as_mut()) {
+            slab.set(offset, data)
+        } else {
+            false
+        }
+    }
+
     fn find_size_category(&self, size: usize) -> usize {
         match SLAB_SIZES.binary_search(&size) {
             Ok(index) => index,
@@ -395,6 +446,41 @@ where
                 }
             }
         }
+    }
+
+    /// Reserve page_0 for rehashing progress tracking
+    /// This ensures HeapIdx(category=0, offset=0) is always available for storing rehash progress
+    fn reserve_progress_page(&mut self)
+    where
+        Self: HeapOps<S>,
+    {
+        // Reserve a page in category 0 (smallest size) for progress tracking
+        let progress_data = 0u64.to_le_bytes(); // Initialize with 0
+        let _reserved_idx = self.append(&progress_data);
+        
+        // The first allocation should always give us HeapIdx(category=0, offset=0)
+        // This is our reserved progress tracking slot
+    }
+
+    /// Get the current rehashing progress from the reserved page
+    pub fn get_rehash_progress(&self) -> u64 {
+        let progress_idx = HeapIdx::new().with_category(0).with_offset(0);
+        if let Some(data) = self.get(progress_idx) {
+            if data.len() >= 8 {
+                u64::from_le_bytes(data[0..8].try_into().unwrap_or([0; 8]))
+            } else {
+                0
+            }
+        } else {
+            0
+        }
+    }
+
+    /// Set the current rehashing progress in the reserved page
+    pub fn set_rehash_progress(&mut self, progress: u64) -> bool {
+        let progress_idx = HeapIdx::new().with_category(0).with_offset(0);
+        let progress_data = progress.to_le_bytes();
+        self.set(progress_idx, &progress_data)
     }
 }
 

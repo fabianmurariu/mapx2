@@ -502,6 +502,24 @@ impl<BS: ByteStore> EntriesStorage<BS> for EntriesImpl<BS> {
     }
 }
 
+impl<BS: ByteStore> EntriesImpl<BS> {
+    /// Get the current rehash progress (only meaningful for DoubleArrayEntries)
+    pub fn get_rehash_progress(&self) -> Option<usize> {
+        match self {
+            EntriesImpl::Single(_) => None,
+            EntriesImpl::Double(entries) => Some(entries.get_rehash_progress()),
+        }
+    }
+
+    /// Set the rehash progress (only meaningful for DoubleArrayEntries)
+    pub fn set_rehash_progress(&mut self, progress: usize) {
+        match self {
+            EntriesImpl::Single(_) => {} // No-op for single array
+            EntriesImpl::Double(entries) => entries.set_rehash_progress(progress),
+        }
+    }
+}
+
 /// Double array entries for incremental resizing
 /// 
 /// This implementation maintains two entry arrays during resize operations:
@@ -542,6 +560,30 @@ impl<BS: ByteStore> DoubleArrayEntries<BS> {
         }
     }
 
+    /// Creates a DoubleArrayEntries in mid-resize state (for restoration from disk)
+    pub fn new_with_old_entries(
+        old_entries: FixedVec<Entry, BS>,
+        new_entries: FixedVec<Entry, BS>,
+        rehash_progress: usize,
+        rehash_batch_size: usize,
+    ) -> Self {
+        // Count occupied entries across both arrays
+        let new_count = new_entries.iter().filter(|e| e.is_occupied()).count();
+        let old_count = old_entries.iter()
+            .filter(|e| e.is_occupied() && !e.is_moved())
+            .count();
+        let occupied_count = new_count + old_count;
+
+        let old_capacity = old_entries.capacity();
+        Self {
+            old_entries: Some(old_entries),
+            new_entries,
+            rehash_progress: rehash_progress.min(old_capacity),
+            occupied_count,
+            rehash_batch_size,
+        }
+    }
+
     /// Returns true if currently in resize mode (has both old and new arrays)
     pub fn is_resizing(&self) -> bool {
         self.old_entries.is_some()
@@ -550,6 +592,14 @@ impl<BS: ByteStore> DoubleArrayEntries<BS> {
     /// Returns the current rehash progress (number of old entries processed)
     pub fn get_rehash_progress(&self) -> usize {
         self.rehash_progress
+    }
+
+    /// Set the rehash progress (used when restoring from disk)
+    pub fn set_rehash_progress(&mut self, progress: usize) {
+        if let Some(ref old_entries) = self.old_entries {
+            // Ensure progress doesn't exceed old array capacity
+            self.rehash_progress = progress.min(old_entries.capacity());
+        }
     }
 
     /// Returns the new array capacity for debugging

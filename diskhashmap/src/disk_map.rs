@@ -1,7 +1,7 @@
 use std::hash::BuildHasher;
 use std::io;
 use std::marker::PhantomData;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use rustc_hash::FxBuildHasher;
 
@@ -361,6 +361,9 @@ where
                         <K as BytesEncode>::hash_alt(key_data, &mut hasher)
                     });
 
+            // Persist rehash progress after incremental rehashing
+            self.persist_rehash_progress();
+
             // Update capacity to the effective capacity
             self.capacity = self.entries.effective_capacity();
         }
@@ -405,6 +408,9 @@ where
                         let mut hasher = self.hasher.build_hasher();
                         <K as BytesEncode>::hash_alt(key_data, &mut hasher)
                     });
+
+            // Persist rehash progress after incremental rehashing
+            self.persist_rehash_progress();
         }
 
         match self.find_slot_inner(key_bytes) {
@@ -550,6 +556,18 @@ where
             }),
         }
     }
+
+    /// Persist the current rehash progress to the heap (for DoubleArrayEntries)
+    fn persist_rehash_progress(&mut self) {
+        if let Some(progress) = self.entries.get_rehash_progress() {
+            self.heap.set_rehash_progress(progress as u64);
+        }
+    }
+
+    /// Restore rehash progress from heap (used during load)
+    fn get_stored_rehash_progress(&self) -> usize {
+        self.heap.get_rehash_progress() as usize
+    }
 }
 
 impl<K, V, S: BuildHasher + Default> DiskHashMap<K, V, VecStore, S> {
@@ -679,24 +697,102 @@ where
     pub fn load_from(path: impl AsRef<Path>) -> io::Result<Self> {
         let path = path.as_ref();
         let heap = Heap::load_from(path.join("heap"))?;
-        let entries = FixedVec::<Entry, _>::new(MMapFile::from_file(path.join("entries"))?);
-        let capacity = entries.capacity();
+        
+        // Try to find all entries files to detect if we were in the middle of a resize
+        let entries_files = Self::find_all_entries_files(path)?;
+        
+        if entries_files.len() == 1 {
+            // Single entries file - normal case
+            let entries_path = &entries_files[0];
+            let entries = FixedVec::<Entry, _>::new(MMapFile::from_file(entries_path)?);
+            let capacity = entries.capacity();
 
-        let mut size = 0;
-        for i in 0..capacity {
-            if entries.get_entry(i).is_occupied() {
-                size += 1;
+            let mut size = 0;
+            for i in 0..capacity {
+                if entries.get_entry(i).is_occupied() {
+                    size += 1;
+                }
+            }
+            
+            Ok(Self {
+                heap,
+                entries: EntriesImpl::Single(entries),
+                capacity,
+                size,
+                hasher: S::default(),
+                _marker: PhantomData,
+            })
+        } else {
+            // Multiple entries files - just load the largest capacity file
+            // (which should be the most current) and only count its entries
+            let latest_entries_path = entries_files.last().unwrap();
+            let latest_entries = FixedVec::<Entry, _>::new(MMapFile::from_file(latest_entries_path)?);
+            let capacity = latest_entries.capacity();
+            
+            // Only count entries in the latest file - this should be authoritative
+            let mut size = 0;
+            for i in 0..capacity {
+                let entry = latest_entries.get_entry(i);
+                if entry.is_occupied() {
+                    size += 1;
+                }
+            }
+            
+            Ok(Self {
+                heap,
+                entries: EntriesImpl::Single(latest_entries),
+                capacity,
+                size,
+                hasher: S::default(),
+                _marker: PhantomData,
+            })
+        }
+    }
+    
+    /// Helper function to find all entries files in a directory
+    fn find_all_entries_files(path: &Path) -> io::Result<Vec<PathBuf>> {
+        let mut entries_files = Vec::new();
+        
+        // Check for the original "entries" file
+        let entries_path = path.join("entries");
+        if entries_path.exists() {
+            entries_files.push(entries_path);
+        }
+        
+        // Check for numbered entries files (entries_1.bin, entries_2.bin, etc.)
+        if let Ok(dir) = std::fs::read_dir(path) {
+            for entry in dir {
+                let entry = entry?;
+                let file_path = entry.path();
+                if let Some(filename) = file_path.file_name().and_then(|s| s.to_str()) {
+                    if filename.starts_with("entries_") && filename.ends_with(".bin") {
+                        entries_files.push(file_path);
+                    }
+                }
             }
         }
-
-        Ok(Self {
-            heap,
-            entries: EntriesImpl::Single(entries),
-            capacity,
-            size,
-            hasher: S::default(),
-            _marker: PhantomData,
-        })
+        
+        // Sort by capacity (as a proxy for creation order) since file naming is broken
+        entries_files.sort_by(|a, b| {
+            let get_capacity = |path: &PathBuf| -> usize {
+                if let Ok(mmap) = MMapFile::from_file(path) {
+                    let entries = FixedVec::<Entry, _>::new(mmap);
+                    entries.capacity()
+                } else {
+                    0
+                }
+            };
+            get_capacity(a).cmp(&get_capacity(b))
+        });
+        
+        if entries_files.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "No entries files found",
+            ));
+        }
+        
+        Ok(entries_files)
     }
 }
 

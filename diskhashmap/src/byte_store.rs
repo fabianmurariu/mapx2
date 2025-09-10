@@ -241,14 +241,14 @@ impl ByteStore for MMapFile {
             .parent()
             .expect("Failed to get parent path of mmap file");
 
-        let path_name = self
+        let path_stem = self
             .path
-            .file_name()
-            .expect("Failed to get file name from mmap file path")
+            .file_stem()
+            .expect("Failed to get file stem from mmap file path")
             .to_string_lossy()
             .to_string();
 
-        let file_name = parent_path.join(format!("{}_{}.bin", path_name, self.idx + 1));
+        let file_name = parent_path.join(format!("{}_{}.bin", path_stem, self.idx + 1));
         // Create a new file with the new size
         let mut new_file =
             MMapFile::new_inner(file_name, new_size, self.idx + 1).unwrap_or_else(|err| {

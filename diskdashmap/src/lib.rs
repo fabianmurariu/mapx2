@@ -173,15 +173,14 @@ where
     V: for<'a> BytesEncode<'a> + for<'a> BytesDecode<'a>,
 {
     /// Create a new concurrent disk hash map with a custom hasher and number of shards.
-    pub fn with_hasher_and_shards_in<P: AsRef<Path>>(
-        dir: P,
+    pub fn with_hasher_and_shards_in(
+        dir: &Path,
         hasher: S,
         shard_count: usize,
         builder: impl Fn(&Path) -> io::Result<DiskHashMap<K, V, MMapFile, S>>,
     ) -> io::Result<Self> {
         let shard_count = shard_count.next_power_of_two();
         let shift = shard_count.trailing_zeros() as usize;
-        let dir = dir.as_ref();
 
         // Create directory if it doesn't exist
         std::fs::create_dir_all(dir)?;
