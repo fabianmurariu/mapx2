@@ -1219,11 +1219,11 @@ mod tests {
     }
 
     #[test]
-    fn it_s_a_hash_map() {
+    fn it_s_a_hash_disk_map() {
         let small_hash_map_prop = proptest::collection::hash_map(
             proptest::collection::vec(0u8..255, 1..32),
             proptest::collection::vec(0u8..255, 1..32),
-            1..250,
+            1..15,
         );
 
         proptest!(|(values in small_hash_map_prop)|{

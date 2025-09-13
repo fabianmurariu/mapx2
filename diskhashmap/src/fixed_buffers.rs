@@ -9,6 +9,7 @@ use crate::byte_store::ByteStore;
 
 /// A vector backed by a ByteStore that only accepts types `T` which are Pod (Plain Old Data)
 /// and can be represented as a slice of bytes.
+#[derive(Clone)]
 pub struct FixedVec<T, S: ByteStore> {
     store: S,
     capacity: usize,
