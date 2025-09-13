@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use rustc_hash::FxBuildHasher;
 
 use crate::byte_store::{MMapFile, VecStore};
-use crate::entries::{EntriesImpl, EntriesStorage};
+use crate::entries::{DoubleArrayEntries, EntriesImpl, EntriesStorage};
 use crate::entry::Entry;
 use crate::error::Result;
 use crate::fixed_buffers::FixedVec;
@@ -361,9 +361,6 @@ where
                         <K as BytesEncode>::hash_alt(key_data, &mut hasher)
                     });
 
-            // Persist rehash progress after incremental rehashing
-            self.persist_rehash_progress();
-
             // Update capacity to the effective capacity
             self.capacity = self.entries.effective_capacity();
         }
@@ -408,9 +405,6 @@ where
                         let mut hasher = self.hasher.build_hasher();
                         <K as BytesEncode>::hash_alt(key_data, &mut hasher)
                     });
-
-            // Persist rehash progress after incremental rehashing
-            self.persist_rehash_progress();
         }
 
         match self.find_slot_inner(key_bytes) {
@@ -556,18 +550,6 @@ where
             }),
         }
     }
-
-    /// Persist the current rehash progress to the heap (for DoubleArrayEntries)
-    fn persist_rehash_progress(&mut self) {
-        if let Some(progress) = self.entries.get_rehash_progress() {
-            self.heap.set_rehash_progress(progress as u64);
-        }
-    }
-
-    /// Restore rehash progress from heap (used during load)
-    fn get_stored_rehash_progress(&self) -> usize {
-        self.heap.get_rehash_progress() as usize
-    }
 }
 
 impl<K, V, S: BuildHasher + Default> DiskHashMap<K, V, VecStore, S> {
@@ -612,30 +594,6 @@ impl<K, V, S: BuildHasher + Default> DiskHashMap<K, V, VecStore, S> {
             _marker: PhantomData,
         }
     }
-
-    /// Creates a new in-memory HashMap with specified resize configuration
-    pub fn new_with_config(config: &crate::entries::ResizeConfig) -> Self {
-        let heap = Heap::new_in_memory();
-        let entries = FixedVec::<Entry, _>::new(VecStore::new());
-        let capacity = entries.capacity();
-
-        let entries_impl = if config.use_double_array {
-            let double_entries =
-                crate::entries::DoubleArrayEntries::new(entries, config.rehash_batch_size);
-            EntriesImpl::Double(double_entries)
-        } else {
-            EntriesImpl::Single(entries)
-        };
-
-        Self {
-            heap,
-            entries: entries_impl,
-            capacity,
-            size: 0,
-            hasher: S::default(),
-            _marker: PhantomData,
-        }
-    }
 }
 
 impl<K, V, S> DiskHashMap<K, V, MMapFile, S>
@@ -653,7 +611,7 @@ where
 
         Ok(Self {
             heap,
-            entries: EntriesImpl::Single(entries),
+            entries: EntriesImpl::Double(DoubleArrayEntries::new(entries, 8)),
             capacity,
             size: 0,
             hasher: S::default(),
@@ -697,10 +655,10 @@ where
     pub fn load_from(path: impl AsRef<Path>) -> io::Result<Self> {
         let path = path.as_ref();
         let heap = Heap::load_from(path.join("heap"))?;
-        
+
         // Try to find all entries files to detect if we were in the middle of a resize
         let entries_files = Self::find_all_entries_files(path)?;
-        
+
         if entries_files.len() == 1 {
             // Single entries file - normal case
             let entries_path = &entries_files[0];
@@ -713,7 +671,7 @@ where
                     size += 1;
                 }
             }
-            
+
             Ok(Self {
                 heap,
                 entries: EntriesImpl::Single(entries),
@@ -726,9 +684,10 @@ where
             // Multiple entries files - just load the largest capacity file
             // (which should be the most current) and only count its entries
             let latest_entries_path = entries_files.last().unwrap();
-            let latest_entries = FixedVec::<Entry, _>::new(MMapFile::from_file(latest_entries_path)?);
+            let latest_entries =
+                FixedVec::<Entry, _>::new(MMapFile::from_file(latest_entries_path)?);
             let capacity = latest_entries.capacity();
-            
+
             // Only count entries in the latest file - this should be authoritative
             let mut size = 0;
             for i in 0..capacity {
@@ -737,7 +696,7 @@ where
                     size += 1;
                 }
             }
-            
+
             Ok(Self {
                 heap,
                 entries: EntriesImpl::Single(latest_entries),
@@ -748,17 +707,17 @@ where
             })
         }
     }
-    
+
     /// Helper function to find all entries files in a directory
     fn find_all_entries_files(path: &Path) -> io::Result<Vec<PathBuf>> {
         let mut entries_files = Vec::new();
-        
+
         // Check for the original "entries" file
         let entries_path = path.join("entries");
         if entries_path.exists() {
             entries_files.push(entries_path);
         }
-        
+
         // Check for numbered entries files (entries_1.bin, entries_2.bin, etc.)
         if let Ok(dir) = std::fs::read_dir(path) {
             for entry in dir {
@@ -771,7 +730,7 @@ where
                 }
             }
         }
-        
+
         // Sort by capacity (as a proxy for creation order) since file naming is broken
         entries_files.sort_by(|a, b| {
             let get_capacity = |path: &PathBuf| -> usize {
@@ -784,14 +743,14 @@ where
             };
             get_capacity(a).cmp(&get_capacity(b))
         });
-        
+
         if entries_files.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
                 "No entries files found",
             ));
         }
-        
+
         Ok(entries_files)
     }
 }

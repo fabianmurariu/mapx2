@@ -280,15 +280,10 @@ impl Heap<VecStore> {
             slabs.push(None);
         }
 
-        let mut heap = Self {
+        Self {
             slabs,
             base_path: PathBuf::new(),
-        };
-        
-        // Reserve page_0 for rehashing progress tracking
-        heap.reserve_progress_page();
-        
-        heap
+        }
     }
 }
 
@@ -302,12 +297,7 @@ impl Heap<MMapFile> {
             slabs.push(None);
         }
 
-        let mut heap = Self { slabs, base_path };
-        
-        // Reserve page_0 for rehashing progress tracking
-        heap.reserve_progress_page();
-        
-        Ok(heap)
+        Ok(Self { slabs, base_path })
     }
 
     pub fn new_with_capacity<P: AsRef<Path>>(
@@ -335,12 +325,7 @@ impl Heap<MMapFile> {
             }
         }
 
-        let mut heap = Self { slabs, base_path };
-        
-        // Reserve page_0 for rehashing progress tracking
-        heap.reserve_progress_page();
-        
-        Ok(heap)
+        Ok(Self { slabs, base_path })
     }
 
     pub fn load_from<P: AsRef<Path>>(base_path: P) -> io::Result<Self> {
@@ -448,40 +433,6 @@ where
         }
     }
 
-    /// Reserve page_0 for rehashing progress tracking
-    /// This ensures HeapIdx(category=0, offset=0) is always available for storing rehash progress
-    fn reserve_progress_page(&mut self)
-    where
-        Self: HeapOps<S>,
-    {
-        // Reserve a page in category 0 (smallest size) for progress tracking
-        let progress_data = 0u64.to_le_bytes(); // Initialize with 0
-        let _reserved_idx = self.append(&progress_data);
-        
-        // The first allocation should always give us HeapIdx(category=0, offset=0)
-        // This is our reserved progress tracking slot
-    }
-
-    /// Get the current rehashing progress from the reserved page
-    pub fn get_rehash_progress(&self) -> u64 {
-        let progress_idx = HeapIdx::new().with_category(0).with_offset(0);
-        if let Some(data) = self.get(progress_idx) {
-            if data.len() >= 8 {
-                u64::from_le_bytes(data[0..8].try_into().unwrap_or([0; 8]))
-            } else {
-                0
-            }
-        } else {
-            0
-        }
-    }
-
-    /// Set the current rehashing progress in the reserved page
-    pub fn set_rehash_progress(&mut self, progress: u64) -> bool {
-        let progress_idx = HeapIdx::new().with_category(0).with_offset(0);
-        let progress_data = progress.to_le_bytes();
-        self.set(progress_idx, &progress_data)
-    }
 }
 
 pub trait HeapOps<S: ByteStore> {

@@ -147,7 +147,7 @@ where
 
     /// Create a new concurrent disk hash map with specified number of shards.
     pub fn with_shards_in<P: AsRef<Path>>(dir: P, shard_count: usize) -> io::Result<Self> {
-        Self::with_hasher_and_shards_in(dir, FxBuildHasher, shard_count, |path| {
+        Self::with_hasher_and_shards_in(dir.as_ref(), FxBuildHasher, shard_count, |path| {
             DiskHashMap::new_in(path)
         })
     }
@@ -160,7 +160,7 @@ where
         slots_per_slab: usize,
         max_size: Option<usize>,
     ) -> io::Result<Self> {
-        Self::with_hasher_and_shards_in(dir, FxBuildHasher, default_shard_amount(), |path| {
+        Self::with_hasher_and_shards_in(dir.as_ref(), FxBuildHasher, default_shard_amount(), |path| {
             DiskHashMap::with_capacity(path, num_entries, slots_per_slab, max_size)
         })
     }
@@ -443,7 +443,7 @@ mod tests {
                     temp_dir.path(),
                     FxBuildHasher,
                     shard_count,
-                    DiskHashMap::new_in,
+                    |path| DiskHashMap::new_in(path),
                 )
                 .unwrap();
             let key1 = "key1".to_string();
