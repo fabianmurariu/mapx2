@@ -1,536 +1,48 @@
-use std::marker::PhantomData;
-use std::ops::{Index, IndexMut};
+use bytemuck::{Pod, Zeroable};
 
 use crate::ByteStore;
 use crate::entry::Entry;
 use crate::error::Result;
 use crate::fixed_buffers::FixedVec;
 
-/// Configuration for resize behavior
-#[derive(Debug, Clone)]
-pub struct ResizeConfig {
-    /// Load factor threshold to trigger resize (default: 0.75)
-    pub load_factor_threshold: f64,
+#[derive(Debug, Clone, Copy)]
+#[repr(transparent)]
+pub(crate) struct SlotIdx(i64);
 
-    /// Number of entries to rehash per operation (default: 8)
-    pub rehash_batch_size: usize,
+impl SlotIdx {
+    pub fn new(i: usize) -> Self {
+        Self(i as i64)
+    }
 
-    /// Growth factor for new capacity (default: 2.0)
-    pub growth_factor: f64,
+    pub fn old(i: usize) -> Self {
+        Self(-(i as i64) - 1)
+    }
 
-    /// Whether to use double array implementation for incremental resizing
-    pub use_double_array: bool,
-}
+    pub fn value(self) -> usize {
+        let val = self.0;
+        let mask = val >> 63;
+        (val ^ mask) as usize
+    }
 
-impl Default for ResizeConfig {
-    fn default() -> Self {
-        Self {
-            load_factor_threshold: 0.75,
-            rehash_batch_size: 8,
-            growth_factor: 2.0,
-            use_double_array: true, // Default to double array for better performance
-        }
+    pub fn is_old(self) -> bool {
+        self.0 < 0
+    }
+
+    pub fn max() -> Self {
+        Self(i64::MAX)
     }
 }
 
-/// Trait abstracting entry storage operations for DiskHashMap
-///
-/// This trait abstracts the operations performed on the entries array,
-/// allowing for different implementations such as:
-/// - Single array implementation (current `FixedVec<Entry, BS>`)
-/// - Double array implementation for incremental resizing (future)
-pub trait EntriesStorage<BS: ByteStore>: Index<usize, Output = Entry> + IndexMut<usize> {
-    /// Returns the current capacity of the entries storage
-    fn capacity(&self) -> usize;
-
-    /// Returns the number of entries that are currently occupied
-    fn occupied_count(&self) -> usize;
-
-    /// Creates a new entries storage with the specified capacity
-    fn new_with_capacity(store: BS, capacity: usize) -> Result<Self>
-    where
-        Self: Sized;
-
-    /// Creates a new empty entries storage with increased capacity
-    fn new_empty(&self, new_capacity: usize) -> Self;
-
-    /// Returns true if the storage is currently being resized (for double array impl)
-    fn is_resizing(&self) -> bool {
-        false
-    }
-
-    /// Returns the effective capacity during resize operations
-    /// For single array: returns capacity()
-    /// For double array: returns old_capacity + new_capacity during resize
-    fn effective_capacity(&self) -> usize {
-        self.capacity()
-    }
-
-    /// Starts a resize operation (for double array implementation)
-    fn start_resize(&mut self, _new_capacity: usize) -> Result<()> {
-        Ok(()) // No-op for single array
-    }
-
-    /// Performs incremental rehashing during resize (for double array impl)
-    /// Returns the number of entries that were rehashed
-    fn incremental_rehash(&mut self, _max_entries: usize) -> usize {
-        0 // No-op for single array
-    }
-
-    /// Performs incremental rehashing with access to key data for proper hashing
-    /// The closure receives (key_pos, value_pos) and should return the new hash
-    fn incremental_rehash_with_hasher<F>(&mut self, max_entries: usize, _hash_fn: F) -> usize
-    where
-        F: Fn(crate::HeapIdx, crate::HeapIdx) -> u64,
-    {
-        // Default implementation falls back to basic incremental_rehash
-        self.incremental_rehash(max_entries)
-    }
-
-    /// Completes the resize operation (for double array implementation)
-    fn complete_resize(&mut self) -> Result<()> {
-        Ok(()) // No-op for single array
-    }
-
-    /// Gets an entry at the given index, handling resize state
-    /// For single array: simple index access
-    /// For double array: checks both old and new arrays based on resize state
-    fn get_entry(&self, index: usize) -> &Entry {
-        &self[index]
-    }
-
-    /// Gets a mutable entry at the given index, handling resize state
-    fn get_entry_mut(&mut self, index: usize) -> &mut Entry {
-        &mut self[index]
-    }
-
-    /// Sets an entry at the given index, handling resize state
-    fn set_entry(&mut self, index: usize, entry: Entry) {
-        self[index] = entry;
-    }
-
-    /// Find a slot for the given key hash, returning Ok(index) if found, Err(empty_index) if not found
-    /// This method handles the complexity of searching in both old and new arrays during resize
-    fn find_slot_with_hash<F>(
-        &self,
-        hash: u64,
-        mut key_matcher: F,
-    ) -> std::result::Result<usize, usize>
-    where
-        F: FnMut(&Entry) -> bool,
-    {
-        // Default implementation for single array
-        let capacity = self.capacity();
-        if capacity == 0 {
-            return Err(0);
-        }
-
-        let mut index = hash as usize % capacity;
-        // Linear probing
-        for _ in 0..capacity {
-            let entry = self.get_entry(index);
-            if entry.is_empty() {
-                // Empty slot, key not found
-                return Err(index);
-            }
-            if !entry.is_deleted() {
-                // Check if this is our key
-                if key_matcher(entry) {
-                    return Ok(index);
-                }
-            }
-            // continue probing for deleted slots or non-matching keys
-            index = (index + 1) % capacity;
-        }
-        // Table is full
-        Err(0)
-    }
-
-    /// Iterator over all occupied entries (for iteration support)
-    fn occupied_entries(&self) -> OccupiedEntriesIter<'_, Self, BS>
-    where
-        Self: Sized,
-    {
-        OccupiedEntriesIter {
-            entries: self,
-            current_index: 0,
-            remaining: self.occupied_count(),
-            _phantom: PhantomData,
-        }
-    }
-
-    /// Finds the next probe index for the given hash and current index
-    /// This method can be overridden for different probing strategies
-    fn next_probe_index(&self, current: usize, _hash: u64) -> usize {
-        (current + 1) % self.effective_capacity()
-    }
-
-    /// Calculates the starting probe index for the given hash
-    fn probe_start(&self, hash: u64) -> usize {
-        (hash as usize) % self.effective_capacity()
-    }
-}
-
-/// Iterator over occupied entries in the entries storage
-pub struct OccupiedEntriesIter<'a, E: EntriesStorage<BS> + ?Sized, BS: ByteStore> {
-    entries: &'a E,
-    current_index: usize,
-    remaining: usize,
-    _phantom: PhantomData<BS>,
-}
-
-impl<'a, E: EntriesStorage<BS>, BS: ByteStore> Iterator for OccupiedEntriesIter<'a, E, BS> {
-    type Item = (usize, &'a Entry);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.remaining == 0 {
-            return None;
-        }
-
-        while self.current_index < self.entries.effective_capacity() {
-            let entry = self.entries.get_entry(self.current_index);
-            let index = self.current_index;
-            self.current_index += 1;
-
-            if entry.is_occupied() {
-                self.remaining -= 1;
-                return Some((index, entry));
-            }
-        }
-
-        None
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        (self.remaining, Some(self.remaining))
-    }
-}
-
-impl<E: EntriesStorage<BS>, BS: ByteStore> ExactSizeIterator for OccupiedEntriesIter<'_, E, BS> {
-    fn len(&self) -> usize {
-        self.remaining
-    }
-}
-
-/// Single array implementation of EntriesStorage (current implementation)
-pub struct SingleArrayEntries<BS: ByteStore> {
-    entries: FixedVec<Entry, BS>,
-    occupied_count: usize,
-}
-
-impl<BS: ByteStore> SingleArrayEntries<BS> {
-    pub fn new(entries: FixedVec<Entry, BS>) -> Self {
-        let occupied_count = entries.iter().filter(|e| e.is_occupied()).count();
-        Self {
-            entries,
-            occupied_count,
-        }
-    }
-
-    pub fn into_inner(self) -> FixedVec<Entry, BS> {
-        self.entries
-    }
-
-    pub fn inner(&self) -> &FixedVec<Entry, BS> {
-        &self.entries
-    }
-
-    pub fn inner_mut(&mut self) -> &mut FixedVec<Entry, BS> {
-        &mut self.entries
-    }
-}
-
-impl<BS: ByteStore> Index<usize> for SingleArrayEntries<BS> {
-    type Output = Entry;
-
-    fn index(&self, index: usize) -> &Self::Output {
-        &self.entries[index]
-    }
-}
-
-impl<BS: ByteStore> IndexMut<usize> for SingleArrayEntries<BS> {
-    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
-        &mut self.entries[index]
-    }
-}
-
-impl<BS: ByteStore> EntriesStorage<BS> for SingleArrayEntries<BS> {
-    fn capacity(&self) -> usize {
-        self.entries.capacity()
-    }
-
-    fn occupied_count(&self) -> usize {
-        self.occupied_count
-    }
-
-    fn new_with_capacity(store: BS, capacity: usize) -> Result<Self> {
-        let entries = FixedVec::new(store);
-        // Verify that the capacity matches what we expect
-        assert!(
-            entries.capacity() >= capacity,
-            "Store capacity {} is less than requested capacity {}",
-            entries.capacity(),
-            capacity
-        );
-        Ok(Self {
-            entries,
-            occupied_count: 0,
-        })
-    }
-
-    fn new_empty(&self, new_capacity: usize) -> Self {
-        let new_entries = self.entries.new_empty(new_capacity);
-        Self {
-            entries: new_entries,
-            occupied_count: 0,
-        }
-    }
-
-    fn set_entry(&mut self, index: usize, entry: Entry) {
-        let old_entry = &self.entries[index];
-        let old_occupied = old_entry.is_occupied();
-        let new_occupied = entry.is_occupied();
-
-        self.entries[index] = entry;
-
-        // Update occupied count
-        match (old_occupied, new_occupied) {
-            (false, true) => self.occupied_count += 1,
-            (true, false) => self.occupied_count -= 1,
-            _ => {} // No change
-        }
-    }
-}
-
-/// Direct implementation of EntriesStorage for FixedVec<Entry, BS>
-impl<BS: ByteStore> Index<usize> for FixedVec<Entry, BS> {
-    type Output = Entry;
-
-    fn index(&self, index: usize) -> &Self::Output {
-        &(**self)[index]
-    }
-}
-
-impl<BS: ByteStore> IndexMut<usize> for FixedVec<Entry, BS> {
-    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
-        &mut (**self)[index]
-    }
-}
-
-impl<BS: ByteStore> EntriesStorage<BS> for FixedVec<Entry, BS> {
-    fn capacity(&self) -> usize {
-        FixedVec::capacity(self)
-    }
-
-    fn occupied_count(&self) -> usize {
-        self.iter().filter(|e| e.is_occupied()).count()
-    }
-
-    fn new_with_capacity(store: BS, capacity: usize) -> Result<Self> {
-        let entries = FixedVec::new(store);
-        // Verify that the capacity matches what we expect
-        if entries.capacity() < capacity {
-            return Err(crate::error::DiskMapError::InvalidInput(format!(
-                "Store capacity {} is less than requested capacity {}",
-                entries.capacity(),
-                capacity
-            )));
-        }
-        Ok(entries)
-    }
-
-    fn new_empty(&self, new_capacity: usize) -> Self {
-        self.new_empty(new_capacity)
-    }
-
-    fn set_entry(&mut self, index: usize, entry: Entry) {
-        self[index] = entry;
-    }
-}
-
-/// Enum to hold different entry storage implementations
-/// This allows switching between single and double array implementations
-#[derive(Debug)]
-pub enum EntriesImpl<BS: ByteStore> {
-    Single(FixedVec<Entry, BS>),
-    Double(DoubleArrayEntries<BS>),
-}
-
-impl<BS: ByteStore> EntriesImpl<BS> {
-    /// Creates a new EntriesImpl with the specified configuration
-    pub fn new_with_config(store: BS, capacity: usize, config: &ResizeConfig) -> Result<Self> {
-        if config.use_double_array {
-            let entries = FixedVec::new_with_capacity(store, capacity)?;
-            Ok(EntriesImpl::Double(DoubleArrayEntries::new(
-                entries,
-                config.rehash_batch_size,
-            )))
-        } else {
-            Ok(EntriesImpl::Single(FixedVec::new_with_capacity(
-                store, capacity,
-            )?))
-        }
-    }
-}
-
-impl<BS: ByteStore> Index<usize> for EntriesImpl<BS> {
-    type Output = Entry;
-
-    fn index(&self, index: usize) -> &Self::Output {
-        match self {
-            EntriesImpl::Single(entries) => &entries[index],
-            EntriesImpl::Double(entries) => &entries[index],
-        }
-    }
-}
-
-impl<BS: ByteStore> IndexMut<usize> for EntriesImpl<BS> {
-    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
-        match self {
-            EntriesImpl::Single(entries) => &mut entries[index],
-            EntriesImpl::Double(entries) => &mut entries[index],
-        }
-    }
-}
-
-impl<BS: ByteStore> EntriesStorage<BS> for EntriesImpl<BS> {
-    fn capacity(&self) -> usize {
-        match self {
-            EntriesImpl::Single(entries) => entries.capacity(),
-            EntriesImpl::Double(entries) => entries.capacity(),
-        }
-    }
-
-    fn occupied_count(&self) -> usize {
-        match self {
-            EntriesImpl::Single(entries) => entries.occupied_count(),
-            EntriesImpl::Double(entries) => entries.occupied_count(),
-        }
-    }
-
-    fn new_with_capacity(store: BS, capacity: usize) -> Result<Self> {
-        // Default to double array implementation with incremental resizing
-        let entries = FixedVec::new_with_capacity(store, capacity)?;
-        Ok(EntriesImpl::Double(DoubleArrayEntries::new(entries, 8)))
-    }
-
-    fn new_empty(&self, new_capacity: usize) -> Self {
-        match self {
-            EntriesImpl::Single(entries) => EntriesImpl::Single(entries.new_empty(new_capacity)),
-            EntriesImpl::Double(entries) => EntriesImpl::Double(entries.new_empty(new_capacity)),
-        }
-    }
-
-    fn is_resizing(&self) -> bool {
-        match self {
-            EntriesImpl::Single(entries) => entries.is_resizing(),
-            EntriesImpl::Double(entries) => entries.is_resizing(),
-        }
-    }
-
-    fn effective_capacity(&self) -> usize {
-        match self {
-            EntriesImpl::Single(entries) => entries.effective_capacity(),
-            EntriesImpl::Double(entries) => entries.effective_capacity(),
-        }
-    }
-
-    fn start_resize(&mut self, new_capacity: usize) -> Result<()> {
-        match self {
-            EntriesImpl::Single(entries) => entries.start_resize(new_capacity),
-            EntriesImpl::Double(entries) => entries.start_resize(new_capacity),
-        }
-    }
-
-    fn incremental_rehash(&mut self, max_entries: usize) -> usize {
-        match self {
-            EntriesImpl::Single(entries) => entries.incremental_rehash(max_entries),
-            EntriesImpl::Double(entries) => entries.incremental_rehash(max_entries),
-        }
-    }
-
-    fn incremental_rehash_with_hasher<F>(&mut self, max_entries: usize, hash_fn: F) -> usize
-    where
-        F: Fn(crate::HeapIdx, crate::HeapIdx) -> u64,
-    {
-        match self {
-            EntriesImpl::Single(entries) => {
-                entries.incremental_rehash_with_hasher(max_entries, hash_fn)
-            }
-            EntriesImpl::Double(entries) => {
-                entries.incremental_rehash_with_hasher(max_entries, hash_fn)
-            }
-        }
-    }
-
-    fn complete_resize(&mut self) -> Result<()> {
-        match self {
-            EntriesImpl::Single(entries) => entries.complete_resize(),
-            EntriesImpl::Double(entries) => entries.complete_resize(),
-        }
-    }
-
-    fn get_entry(&self, index: usize) -> &Entry {
-        match self {
-            EntriesImpl::Single(entries) => entries.get_entry(index),
-            EntriesImpl::Double(entries) => entries.get_entry(index),
-        }
-    }
-
-    fn get_entry_mut(&mut self, index: usize) -> &mut Entry {
-        match self {
-            EntriesImpl::Single(entries) => entries.get_entry_mut(index),
-            EntriesImpl::Double(entries) => entries.get_entry_mut(index),
-        }
-    }
-
-    fn set_entry(&mut self, index: usize, entry: Entry) {
-        match self {
-            EntriesImpl::Single(entries) => entries.set_entry(index, entry),
-            EntriesImpl::Double(entries) => entries.set_entry(index, entry),
-        }
-    }
-
-    fn find_slot_with_hash<F>(&self, hash: u64, key_matcher: F) -> std::result::Result<usize, usize>
-    where
-        F: FnMut(&Entry) -> bool,
-    {
-        match self {
-            EntriesImpl::Single(entries) => entries.find_slot_with_hash(hash, key_matcher),
-            EntriesImpl::Double(entries) => entries.find_slot_with_hash(hash, key_matcher),
-        }
-    }
-
-    fn next_probe_index(&self, current: usize, hash: u64) -> usize {
-        match self {
-            EntriesImpl::Single(entries) => entries.next_probe_index(current, hash),
-            EntriesImpl::Double(entries) => entries.next_probe_index(current, hash),
-        }
-    }
-
-    fn probe_start(&self, hash: u64) -> usize {
-        match self {
-            EntriesImpl::Single(entries) => entries.probe_start(hash),
-            EntriesImpl::Double(entries) => entries.probe_start(hash),
-        }
-    }
-}
-
-impl<BS: ByteStore> EntriesImpl<BS> {
-    /// Get the current rehash progress (only meaningful for DoubleArrayEntries)
-    pub fn get_rehash_progress(&self) -> Option<usize> {
-        match self {
-            EntriesImpl::Single(_) => None,
-            EntriesImpl::Double(entries) => Some(entries.get_rehash_progress()),
-        }
-    }
-
-    /// Set the rehash progress (only meaningful for DoubleArrayEntries)
-    pub fn set_rehash_progress(&mut self, progress: usize) {
-        match self {
-            EntriesImpl::Single(_) => {} // No-op for single array
-            EntriesImpl::Double(entries) => entries.set_rehash_progress(progress),
-        }
+#[cfg(test)]
+mod slot_idx_test {
+
+    #[test]
+    fn test_slot_idx() {
+        let idx = super::SlotIdx::new(42);
+        assert_eq!(idx.value(), 42);
+        let old_idx = super::SlotIdx::old(42);
+        assert_eq!(old_idx.value(), 42);
+        assert!(old_idx.0 < 0);
     }
 }
 
@@ -542,6 +54,7 @@ impl<BS: ByteStore> EntriesImpl<BS> {
 ///
 /// Incremental rehashing distributes the resize work across multiple operations
 /// to avoid large pauses, following the algorithm outlined in docs/entries.md
+/// the reported size to the external caller is always of new_entries only
 #[derive(Debug)]
 pub struct DoubleArrayEntries<BS: ByteStore> {
     /// The old entries array (present during resize)
@@ -549,479 +62,634 @@ pub struct DoubleArrayEntries<BS: ByteStore> {
 
     /// The new entries array (always present)
     new_entries: FixedVec<Entry, BS>,
-
-    /// Index of the next entry to rehash in old_entries
-    /// Once all entries are rehashed, old_entries is dropped
-    rehash_progress: usize,
-
-    /// Number of occupied entries across both arrays
-    occupied_count: usize,
-
-    /// Number of entries to rehash per operation
-    rehash_batch_size: usize,
 }
 
 impl<BS: ByteStore> DoubleArrayEntries<BS> {
     /// Creates a new DoubleArrayEntries in normal state (single array)
-    pub fn new(entries: FixedVec<Entry, BS>, rehash_batch_size: usize) -> Self {
-        let occupied_count = entries.iter().filter(|e| e.is_occupied()).count();
+    pub fn new(entries: FixedVec<Entry, BS>) -> Self {
         Self {
             old_entries: None,
             new_entries: entries,
-            rehash_progress: 0,
-            occupied_count,
-            rehash_batch_size,
         }
     }
 
-    /// Creates a DoubleArrayEntries in mid-resize state (for restoration from disk)
-    pub fn new_with_old_entries(
-        old_entries: FixedVec<Entry, BS>,
-        new_entries: FixedVec<Entry, BS>,
-        rehash_progress: usize,
-        rehash_batch_size: usize,
-    ) -> Self {
-        // Count occupied entries across both arrays
-        let new_count = new_entries.iter().filter(|e| e.is_occupied()).count();
-        let old_count = old_entries
-            .iter()
-            .filter(|e| e.is_occupied() && !e.is_moved())
-            .count();
-        let occupied_count = new_count + old_count;
-
-        let old_capacity = old_entries.capacity();
+    /// Creates a new DoubleArrayEntries with old_entries
+    pub fn new_with_old(old: FixedVec<Entry, BS>, new: FixedVec<Entry, BS>) -> Self {
         Self {
-            old_entries: Some(old_entries),
-            new_entries,
-            rehash_progress: rehash_progress.min(old_capacity),
-            occupied_count,
-            rehash_batch_size,
+            old_entries: Some(old),
+            new_entries: new,
         }
     }
+}
 
-    /// Returns true if currently in resize mode (has both old and new arrays)
-    pub fn is_resizing(&self) -> bool {
+// State is stored externally by the disk_map
+// and is passed in for operations that need it
+#[repr(C)]
+#[derive(Debug, Pod, Zeroable, Clone, Copy)]
+pub(crate) struct EntriesState {
+    pub reindex_offset: i64,
+    pub reindex_batch: u64,
+    pub occupied_count: u64,
+}
+
+impl<BS: ByteStore> DoubleArrayEntries<BS> {
+    fn new_with_capacity(store: BS, capacity: usize) -> Result<Self> {
+        let entries = FixedVec::new_with_capacity(store, capacity);
+        Ok(Self::new(entries))
+    }
+
+    pub(crate) fn has_old_entries(&self) -> bool {
         self.old_entries.is_some()
     }
 
-    /// Returns the current rehash progress (number of old entries processed)
-    pub fn get_rehash_progress(&self) -> usize {
-        self.rehash_progress
-    }
-
-    /// Set the rehash progress (used when restoring from disk)
-    pub fn set_rehash_progress(&mut self, progress: usize) {
-        if let Some(ref old_entries) = self.old_entries {
-            // Ensure progress doesn't exceed old array capacity
-            self.rehash_progress = progress.min(old_entries.capacity());
-        }
-    }
-
-    /// Returns the new array capacity for debugging
-    pub fn new_array_capacity(&self) -> usize {
-        self.new_entries.capacity()
-    }
-
-    /// Returns the old array capacity for debugging (if resizing)
-    pub fn old_array_capacity(&self) -> Option<usize> {
-        self.old_entries.as_ref().map(|old| old.capacity())
-    }
-
-    /// Starts a resize operation by creating a new array and preserving the old one
-    fn start_resize_internal(&mut self, new_capacity: usize) -> Result<()> {
-        if self.old_entries.is_some() {
-            return Ok(()); // Already resizing
-        }
-
-        // Create new empty array with increased capacity
+    pub(crate) fn grow(&mut self, new_capacity: usize) -> Result<EntriesState> {
         let new_entries = self.new_entries.new_empty(new_capacity);
-
-        // Move current entries to old_entries and replace with new array
         let old_entries = std::mem::replace(&mut self.new_entries, new_entries);
         self.old_entries = Some(old_entries);
-        self.rehash_progress = 0;
-
-        Ok(())
-    }
-
-    /// Performs incremental rehashing of entries from old array to new array
-    /// Note: This needs access to the heap to recalculate hashes from key bytes
-    /// For now, we use key position as a simple hash approximation
-    fn incremental_rehash_internal(&mut self, max_entries: usize) -> Result<usize> {
-        if self.old_entries.is_none() {
-            return Ok(0); // Not resizing
-        }
-
-        let mut rehashed = 0;
-        let old_capacity = self.old_entries.as_ref().unwrap().capacity();
-
-        while rehashed < max_entries && self.rehash_progress < old_capacity {
-            // Get the entry to rehash (copy it before borrowing mutably)
-            let entry = self.old_entries.as_ref().unwrap()[self.rehash_progress];
-
-            if entry.is_occupied() {
-                let hash = u64::from(entry.key_pos());
-
-                // Find insertion slot in new array
-                let new_index = self.find_insertion_slot(hash)?;
-                self.new_entries[new_index] = entry;
-
-                // Mark the old entry as moved
-                self.old_entries.as_mut().unwrap()[self.rehash_progress].mark_as_moved();
-
-                rehashed += 1;
-            }
-
-            self.rehash_progress += 1;
-        }
-
-        // Check if resize is complete
-        if self.rehash_progress >= old_capacity {
-            self.old_entries = None; // Drop old array
-            self.rehash_progress = 0;
-        }
-
-        Ok(rehashed)
-    }
-
-    /// Finds an available insertion slot in the new entries array
-    fn find_insertion_slot(&self, hash: u64) -> Result<usize> {
-        let capacity = self.new_entries.capacity();
-        let mut index = (hash as usize) % capacity;
-
-        // Linear probing to find empty slot
-        loop {
-            if !self.new_entries[index].is_occupied() {
-                return Ok(index);
-            }
-            index = (index + 1) % capacity;
-        }
-    }
-
-    /// Looks up an entry in both arrays (new first, then old if resizing)
-    #[allow(dead_code)]
-    fn lookup_in_arrays(&self, hash: u64, key_matcher: impl Fn(&Entry) -> bool) -> Option<usize> {
-        // First check new array
-        let new_capacity = self.new_entries.capacity();
-        let mut index = (hash as usize) % new_capacity;
-
-        loop {
-            let entry = &self.new_entries[index];
-            if !entry.is_occupied() {
-                break; // Empty slot, not found in new array
-            }
-            if key_matcher(entry) {
-                return Some(index);
-            }
-            index = (index + 1) % new_capacity;
-        }
-
-        // If resizing, check old array for unrelocated entries
-        if let Some(ref old_entries) = self.old_entries {
-            let old_capacity = old_entries.capacity();
-            let old_start_index = (hash as usize) % old_capacity;
-
-            // Only search in old array if this hash bucket hasn't been rehashed yet
-            if old_start_index >= self.rehash_progress {
-                let mut old_index = old_start_index;
-                loop {
-                    let entry = &old_entries[old_index];
-                    if !entry.is_occupied() {
-                        break; // Empty slot, not found
-                    }
-                    if !entry.is_moved() && key_matcher(entry) {
-                        // Return offset index to distinguish from new array
-                        return Some(old_index + new_capacity);
-                    }
-                    old_index = (old_index + 1) % old_capacity;
-                }
-            }
-        }
-
-        None
-    }
-}
-
-impl<BS: ByteStore> Index<usize> for DoubleArrayEntries<BS> {
-    type Output = Entry;
-
-    fn index(&self, index: usize) -> &Self::Output {
-        let new_capacity = self.new_entries.capacity();
-
-        if index < new_capacity {
-            // Index is in new array
-            &self.new_entries[index]
-        } else {
-            // Index is in old array (offset by new_capacity)
-            let old_entries = self
-                .old_entries
-                .as_ref()
-                .expect("Attempted to access old array when not resizing");
-            let old_index = index - new_capacity;
-            &old_entries[old_index]
-        }
-    }
-}
-
-impl<BS: ByteStore> IndexMut<usize> for DoubleArrayEntries<BS> {
-    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
-        let new_capacity = self.new_entries.capacity();
-
-        if index < new_capacity {
-            // Index is in new array
-            &mut self.new_entries[index]
-        } else {
-            // Index is in old array (offset by new_capacity)
-            let old_entries = self
-                .old_entries
-                .as_mut()
-                .expect("Attempted to access old array when not resizing");
-            let old_index = index - new_capacity;
-            &mut old_entries[old_index]
-        }
-    }
-}
-
-impl<BS: ByteStore> EntriesStorage<BS> for DoubleArrayEntries<BS> {
-    fn capacity(&self) -> usize {
-        self.new_entries.capacity()
-    }
-
-    fn occupied_count(&self) -> usize {
-        if self.old_entries.is_none() {
-            // Not resizing, return normal count
-            self.occupied_count
-        } else {
-            // During resize, count actual occupied entries to avoid double-counting
-            let new_count = self.new_entries.iter().filter(|e| e.is_occupied()).count();
-            let old_count = if let Some(ref old_entries) = self.old_entries {
-                // Only count unrelocated entries in old array (skip moved entries)
-                old_entries
-                    .iter()
-                    .filter(|e| e.is_occupied() && !e.is_moved())
-                    .count()
-            } else {
-                0
-            };
-            new_count + old_count
-        }
-    }
-
-    fn new_with_capacity(store: BS, capacity: usize) -> Result<Self> {
-        let entries = FixedVec::new_with_capacity(store, capacity)?;
-        Ok(Self::new(entries, 8)) // Default batch size of 8
-    }
-
-    fn new_empty(&self, new_capacity: usize) -> Self {
-        let new_entries = self.new_entries.new_empty(new_capacity);
-        Self {
-            old_entries: None,
-            new_entries,
-            rehash_progress: 0,
+        Ok(EntriesState {
+            reindex_offset: 0,
+            reindex_batch: 4,
             occupied_count: 0,
-            rehash_batch_size: self.rehash_batch_size,
+        })
+    }
+
+    pub(crate) fn set_entry(
+        &mut self,
+        index: SlotIdx,
+        entry: Entry,
+        state: &mut EntriesState,
+        reindex_callback: impl Fn(&Entry) -> usize,
+    ) {
+        // TODO: handle when SlotIdx is old
+        let items = self.new_entries.as_mut();
+        // let index = hash % items.len();
+        fn insert_into_entries(items: &mut [Entry], index: SlotIdx, entry: Entry) {
+            // fast path for empty slot
+            let index = index.value();
+            if items[index].is_empty() || items[index].is_deleted() || &items[index] == &entry {
+                // either empty slot or replacing same key
+                items[index] = entry;
+                return;
+            }
+            for pos in (index..items.len()).chain(0..index) {
+                let current = &items[pos];
+                if current.is_empty() || current.is_deleted() {
+                    // Found an empty or deleted slot, insert here
+                    items[pos] = entry;
+                    return;
+                }
+                // If the slot is occupied, continue probing
+            }
         }
-    }
-
-    fn is_resizing(&self) -> bool {
-        self.old_entries.is_some()
-    }
-
-    fn effective_capacity(&self) -> usize {
-        if let Some(ref old_entries) = self.old_entries {
-            // During resize: return combined capacity
-            self.new_entries.capacity() + old_entries.capacity()
-        } else {
-            // Normal state: return new array capacity
-            self.new_entries.capacity()
-        }
-    }
-
-    fn start_resize(&mut self, new_capacity: usize) -> Result<()> {
-        self.start_resize_internal(new_capacity)
-    }
-
-    fn incremental_rehash(&mut self, max_entries: usize) -> usize {
-        // Use the configured batch size, but respect the max_entries limit
-        let entries_to_rehash = std::cmp::min(max_entries, self.rehash_batch_size);
-        self.incremental_rehash_internal(entries_to_rehash)
-            .unwrap_or(0)
-    }
-
-    fn incremental_rehash_with_hasher<F>(&mut self, max_entries: usize, hash_fn: F) -> usize
-    where
-        F: Fn(crate::HeapIdx, crate::HeapIdx) -> u64,
-    {
-        if self.old_entries.is_none() {
-            return 0; // Not resizing
-        }
-
-        let entries_to_rehash = std::cmp::min(max_entries, self.rehash_batch_size);
-        let mut rehashed = 0;
-        let old_capacity = self.old_entries.as_ref().unwrap().capacity();
-
-        while rehashed < entries_to_rehash && self.rehash_progress < old_capacity {
-            let entry = self.old_entries.as_ref().unwrap()[self.rehash_progress];
-
-            if entry.is_occupied() {
-                // Calculate proper hash using the provided hash function
-                let hash = hash_fn(entry.key_pos(), entry.value_pos());
-                let new_capacity = self.new_entries.capacity();
-                let mut index = hash as usize % new_capacity;
-
-                // Find insertion slot in new array using linear probing
-                loop {
-                    if !self.new_entries[index].is_occupied() {
-                        self.new_entries[index] = entry;
-                        break;
+        insert_into_entries(items, index, entry);
+        if state.reindex_offset > 0 {
+            // we need to re-index
+            let mut done = false;
+            if let Some(old_items) = self.old_entries.as_ref() {
+                let start = state.reindex_offset as usize;
+                let end = (state.reindex_offset as usize + state.reindex_batch as usize)
+                    .min(old_items.len());
+                done = end == old_items.len();
+                for entry in &old_items.as_ref()[start..end] {
+                    if entry.is_occupied() && !entry.is_moved() {
+                        let new_hash = reindex_callback(entry);
+                        let new_index = new_hash % items.len();
+                        insert_into_entries(items, SlotIdx::new(new_index), *entry);
                     }
-                    index = (index + 1) % new_capacity;
-                }
-
-                // Mark the old entry as moved so iterator knows to skip it
-                self.old_entries.as_mut().unwrap()[self.rehash_progress].mark_as_moved();
-
-                rehashed += 1;
-            }
-
-            self.rehash_progress += 1;
-        }
-
-        // If we've finished rehashing all entries, clean up the old array
-        if self.rehash_progress >= old_capacity {
-            self.old_entries = None;
-            self.rehash_progress = 0;
-        }
-
-        rehashed
-    }
-
-    fn complete_resize(&mut self) -> Result<()> {
-        // Finish any remaining rehashing
-        if let Some(ref old_entries) = self.old_entries {
-            let remaining = old_entries.capacity() - self.rehash_progress;
-            self.incremental_rehash_internal(remaining)?;
-        }
-        Ok(())
-    }
-
-    fn get_entry(&self, index: usize) -> &Entry {
-        &self[index]
-    }
-
-    fn get_entry_mut(&mut self, index: usize) -> &mut Entry {
-        &mut self[index]
-    }
-
-    fn set_entry(&mut self, index: usize, entry: Entry) {
-        let old_entry = &self[index];
-        let old_occupied = old_entry.is_occupied();
-        let new_occupied = entry.is_occupied();
-
-        self[index] = entry;
-
-        // Update occupied count
-        match (old_occupied, new_occupied) {
-            (false, true) => self.occupied_count += 1,
-            (true, false) => self.occupied_count -= 1,
-            _ => {} // No change
-        }
-    }
-
-    fn find_slot_with_hash<F>(
-        &self,
-        hash: u64,
-        mut key_matcher: F,
-    ) -> std::result::Result<usize, usize>
-    where
-        F: FnMut(&Entry) -> bool,
-    {
-        let new_capacity = self.new_entries.capacity();
-        if new_capacity == 0 {
-            return Err(0);
-        }
-
-        // First search the new array
-        let mut index = hash as usize % new_capacity;
-        let start_index = index;
-        let mut empty_slot = None;
-
-        loop {
-            let entry = &self.new_entries[index];
-            if entry.is_empty() {
-                // Remember the first empty slot we find
-                if empty_slot.is_none() {
-                    empty_slot = Some(index);
-                }
-                break;
-            }
-            if !entry.is_deleted() {
-                // Check if this is our key
-                if key_matcher(entry) {
-                    return Ok(index);
+                    state.reindex_offset += 1;
                 }
             }
-            index = (index + 1) % new_capacity;
-            // Avoid infinite loop
-            if index == start_index {
-                break;
+            if done {
+                // finished reindexing
+                self.old_entries = None;
+                state.reindex_offset = 0;
+                let old_entries = self.old_entries.take().unwrap();
+                old_entries.purge();
             }
         }
-
-        // If resizing, also check old array for any unrelocated entries
-        if let Some(ref old_entries) = self.old_entries {
-            let old_capacity = old_entries.capacity();
-            let old_start_index = (hash as usize) % old_capacity;
-            let mut old_index = old_start_index;
-
-            // Search the entire old array for safety (we'll optimize this later)
-            for _ in 0..old_capacity {
-                let entry = &old_entries[old_index];
-                if entry.is_empty() {
-                    break;
-                }
-                if !entry.is_deleted() && !entry.is_moved() {
-                    if key_matcher(entry) {
-                        // Return index offset by new_capacity to indicate it's in old array
-                        return Ok(old_index + new_capacity);
-                    }
-                }
-                old_index = (old_index + 1) % old_capacity;
-                // Avoid infinite loop
-                if old_index == old_start_index {
-                    break;
-                }
-            }
-        }
-
-        // Key not found, return the first empty slot we found (or recalculate if none found)
-        Err(empty_slot.unwrap_or(hash as usize % new_capacity))
     }
 
-    fn next_probe_index(&self, current: usize, _hash: u64) -> usize {
-        let capacity = if current < self.new_entries.capacity() {
-            // Probing in new array
-            self.new_entries.capacity()
+    pub fn get_entry(&self, index: SlotIdx) -> Option<&Entry> {
+        if !index.is_old() {
+            self.new_entries.as_ref().get(index.value())
         } else {
-            // Probing in old array
             self.old_entries
                 .as_ref()
-                .map(|old| old.capacity())
-                .unwrap_or(self.new_entries.capacity())
-        };
-
-        let next = (current + 1) % capacity;
-
-        // If we're in old array, maintain the offset
-        if current >= self.new_entries.capacity() {
-            next + self.new_entries.capacity()
-        } else {
-            next
+                .and_then(|old| old.as_ref().get(index.value()))
         }
     }
 
-    fn probe_start(&self, hash: u64) -> usize {
-        // Always start probing in the new array
-        (hash as usize) % self.new_entries.capacity()
+    pub(crate) fn find_entry(
+        &self,
+        hash: usize,
+        state: &EntriesState,
+    ) -> (
+        impl Iterator<Item = (SlotIdx, &Entry)>,
+        impl Iterator<Item = (SlotIdx, &Entry)>,
+    ) {
+        let index_new = hash % self.new_entries.len();
+        let old_iter = self
+            .old_entries
+            .as_ref()
+            .into_iter()
+            .filter_map(move |old_entries| {
+                let index_old = hash % old_entries.len();
+                if state.reindex_offset > 0 && index_old >= state.reindex_offset as usize {
+                    Some((old_entries, index_old))
+                } else {
+                    None
+                }
+            })
+            .flat_map(move |(old_entries, index_old)| {
+                old_entries.as_ref()[index_old..]
+                    .iter()
+                    .enumerate()
+                    .map(move |(pos, entry)| (pos + index_old, entry))
+                    .chain(
+                        old_entries.as_ref()[state.reindex_offset as usize..index_old]
+                            .iter()
+                            .enumerate()
+                            .map(|(pos, entry)| (pos + state.reindex_offset as usize, entry)),
+                    )
+                    .map(|(pos, entry)| (SlotIdx::old(pos), entry))
+            });
+        let new_iter = self.new_entries.as_ref()[index_new..]
+            .iter()
+            .enumerate()
+            .map(move |(pos, entry)| (pos + index_new, entry))
+            .chain(self.new_entries.as_ref()[..index_new].iter().enumerate())
+            .map(|(pos, entry)| (SlotIdx::old(pos), entry));
+        (new_iter, old_iter)
     }
+
+    // pub(crate) fn new_entries(&self) -> &[Entry] {
+    //     self.new_entries.as_ref()
+    // }
+
+    // pub(crate) fn old_entries(&self) -> Option<&[Entry]> {
+    //     self.old_entries.as_ref().map(|e| e.as_ref())
+    // }
 }
+
+// #[cfg(test)]
+// mod tests {
+//     use super::*;
+//     use crate::{ByteStore, HeapIdx, VecStore};
+
+//     fn create_test_entry(k_pos: u32, v_pos: u32) -> Entry {
+//         Entry::occupied_at_pos(HeapIdx::from(k_pos as u64), HeapIdx::from(v_pos as u64))
+//     }
+
+//     fn create_empty_entries(capacity: usize) -> DoubleArrayEntries<VecStore> {
+//         // Create a VecStore with the right size for the given capacity
+//         let mut store = VecStore::with_capacity(capacity * std::mem::size_of::<Entry>());
+//         // Grow the store to the required size
+//         store.grow(capacity * std::mem::size_of::<Entry>());
+//         DoubleArrayEntries::new_with_capacity(store, capacity).unwrap()
+//     }
+
+//     fn create_entries_with_data(data: Vec<(u32, u32)>) -> DoubleArrayEntries<VecStore> {
+//         let capacity = (data.len() * 2).max(8); // Ensure low load factor
+//         let mut entries = create_empty_entries(capacity);
+
+//         for (k_pos, v_pos) in data {
+//             let entry = create_test_entry(k_pos, v_pos);
+//             let hash = u64::from(k_pos); // Simple hash for testing
+//             let _ = entries.set_entry(hash as usize, entry);
+//         }
+
+//         entries
+//     }
+
+//     #[test]
+//     fn test_create_empty_entries() {
+//         let entries = create_empty_entries(16);
+
+//         assert_eq!(entries.capacity(), 16);
+//         assert_eq!(entries.occupied_count(), 0);
+//         assert!(!entries.is_resizing());
+//         // assert_eq!(entries.load_factor(), 0.0);
+//     }
+
+//     #[test]
+//     fn test_insert_and_lookup() {
+//         let mut entries = create_empty_entries(16);
+//         let entry = create_test_entry(100, 200);
+//         let index = 42;
+
+//         // Insert entry
+//         entries.set_entry(index as usize, entry);
+//         assert_eq!(entries.occupied_count(), 1);
+//         assert!(entries.get_entry(index).is_occupied());
+//         assert_eq!(entries.get_entry(index).key_pos(), HeapIdx::from(100u64));
+//         assert_eq!(entries.get_entry(index).value_pos(), HeapIdx::from(200u64));
+//     }
+
+//     #[test]
+//     fn test_find_slot_existing_key() {
+//         let data = vec![(100, 200), (101, 201), (102, 202)];
+//         let entries = create_entries_with_data(data);
+
+//         // Find existing entry
+//         let hash = 101u64;
+//         let result = entries[hash];
+
+//         assert!(result.is_ok());
+//         let index = result.unwrap();
+//         assert_eq!(entries.get_entry(index).key_pos(), HeapIdx::from(101u64));
+//         assert_eq!(entries.get_entry(index).value_pos(), HeapIdx::from(201u64));
+//     }
+
+//     #[test]
+//     fn test_find_slot_nonexistent_key() {
+//         let data = vec![(100, 200), (101, 201)];
+//         let entries = create_entries_with_data(data);
+
+//         // Find non-existent entry
+//         let hash = 999u64;
+//         let result = entries.find_slot(hash, |entry| entry.key_pos() == HeapIdx::from(999u64));
+
+//         assert!(result.is_err());
+//         let empty_index = result.unwrap_err();
+//         assert!(entries.get_entry(empty_index).is_empty());
+//     }
+
+//     #[test]
+//     fn test_load_factor_calculation() {
+//         let mut entries = create_empty_entries(10);
+//         assert_eq!(entries.load_factor(), 0.0);
+
+//         // Add some entries
+//         for i in 0..3 {
+//             let entry = create_test_entry(i, i + 100);
+//             let _ = entries.insert_entry(u64::from(i), entry);
+//         }
+
+//         assert_eq!(entries.occupied_count(), 3);
+//         assert_eq!(entries.load_factor(), 0.3);
+//     }
+
+//     #[test]
+//     fn test_should_resize_trigger() {
+//         let config = ResizeConfig {
+//             load_factor_threshold: 0.75,
+//             ..Default::default()
+//         };
+
+//         let mut entries = create_empty_entries(4);
+//         entries.set_config(config);
+
+//         // Add entries until we hit the threshold
+//         assert!(!entries.should_resize()); // 0/4 = 0.0
+
+//         let _ = entries.insert_entry(1, create_test_entry(1, 1));
+//         assert!(!entries.should_resize()); // 1/4 = 0.25
+
+//         let _ = entries.insert_entry(2, create_test_entry(2, 2));
+//         assert!(!entries.should_resize()); // 2/4 = 0.5
+
+//         let _ = entries.insert_entry(3, create_test_entry(3, 3));
+//         assert!(!entries.should_resize()); // 3/4 = 0.75 (exactly at threshold)
+
+//         let _ = entries.insert_entry(4, create_test_entry(4, 4));
+//         assert!(entries.should_resize()); // 4/4 = 1.0 > 0.75
+//     }
+
+//     #[test]
+//     fn test_start_resize() {
+//         let data = vec![(1, 10), (2, 20), (3, 30)];
+//         let mut entries = create_entries_with_data(data);
+//         let original_capacity = entries.capacity();
+
+//         assert!(!entries.is_resizing());
+//         assert_eq!(entries.occupied_count(), 3);
+
+//         // Start resize
+//         entries.start_resize(original_capacity * 2).unwrap();
+
+//         assert!(entries.is_resizing());
+//         assert_eq!(entries.capacity(), original_capacity * 2);
+//         assert_eq!(
+//             entries.effective_capacity(),
+//             original_capacity + original_capacity * 2
+//         );
+//         assert_eq!(entries.get_rehash_progress(), 0);
+//         assert_eq!(entries.occupied_count(), 3); // Still tracking occupied entries
+//     }
+
+//     #[test]
+//     fn test_incremental_rehash() {
+//         let data = vec![(1, 10), (2, 20), (3, 30), (4, 40)];
+//         let mut entries = create_entries_with_data(data);
+//         let original_capacity = entries.capacity();
+
+//         // Start resize
+//         entries.start_resize(original_capacity * 2).unwrap();
+//         assert!(entries.is_resizing());
+
+//         // Perform incremental rehash
+//         let rehashed = entries.incremental_rehash_simple();
+//         assert!(rehashed > 0, "Expected to rehash some entries, but got 0");
+//         // After incremental rehash, either we have progress > 0 (still rehashing) or we're done (!is_resizing())
+//         assert!(
+//             entries.get_rehash_progress() > 0 || !entries.is_resizing(),
+//             "Expected either progress > 0 or completed resize"
+//         );
+
+//         // Continue until resize is complete
+//         while entries.is_resizing() {
+//             entries.incremental_rehash_simple();
+//         }
+
+//         assert!(!entries.is_resizing());
+//         assert_eq!(entries.get_rehash_progress(), 0);
+//         assert_eq!(entries.occupied_count(), 4);
+//     }
+
+//     #[test]
+//     fn test_complete_resize() {
+//         let data = vec![(1, 10), (2, 20), (3, 30)];
+//         let mut entries = create_entries_with_data(data);
+//         let original_capacity = entries.capacity();
+
+//         // Start resize
+//         entries.start_resize(original_capacity * 2).unwrap();
+//         assert!(entries.is_resizing());
+
+//         // Complete resize in one go
+//         entries
+//             .complete_resize(|k_pos, _| u64::from(k_pos))
+//             .unwrap();
+
+//         assert!(!entries.is_resizing());
+//         assert_eq!(entries.occupied_count(), 3);
+
+//         // Verify all entries are still findable
+//         for (k_pos, v_pos) in &[(1, 10), (2, 20), (3, 30)] {
+//             let result = entries.find_slot(*k_pos as u64, |e| {
+//                 e.key_pos() == HeapIdx::from(*k_pos as u64)
+//             });
+//             assert!(result.is_ok());
+//             let index = result.unwrap();
+//             assert_eq!(
+//                 entries.get_entry(index).value_pos(),
+//                 HeapIdx::from(*v_pos as u64)
+//             );
+//         }
+//     }
+
+//     #[test]
+//     fn test_load_from_normal_state() {
+//         // Create entries in normal state (no old array)
+//         let data = vec![(5, 50), (6, 60)];
+//         let original_entries = create_entries_with_data(data);
+
+//         // Simulate loading from disk in normal state
+//         let config = ResizeConfig::default();
+//         let loaded = DoubleArrayEntries::load_from_state(
+//             None,                                      // No old array
+//             (*original_entries.new_entries()).clone(), // Simulate cloning the new array
+//             0,                                         // No rehash progress
+//             config,
+//         );
+
+//         assert!(!loaded.is_resizing());
+//         assert_eq!(loaded.occupied_count(), 2);
+//         assert_eq!(loaded.get_rehash_progress(), 0);
+
+//         // Verify entries are accessible
+//         let result = loaded.find_slot(5u64, |e| e.key_pos() == HeapIdx::from(5u64));
+//         assert!(result.is_ok());
+//     }
+
+//     #[test]
+//     fn test_load_from_mid_resize_state() {
+//         // Create entries and start resize to get into mid-resize state
+//         let data = vec![
+//             (1, 10),
+//             (2, 20),
+//             (3, 30),
+//             (4, 40),
+//             (5, 50),
+//             (6, 60),
+//             (7, 70),
+//             (8, 80),
+//         ];
+//         let mut entries = create_entries_with_data(data);
+//         let original_capacity = entries.capacity();
+
+//         // Set a smaller batch size to ensure partial rehashing
+//         let mut config = entries.config().clone();
+//         config.rehash_batch_size = 2; // Only rehash 2 entries at a time
+//         entries.set_config(config);
+
+//         entries.start_resize(original_capacity * 2).unwrap();
+
+//         // Perform partial rehash - should only rehash 2 entries due to small batch size
+//         let rehashed = entries.incremental_rehash_simple();
+//         let progress = entries.get_rehash_progress();
+
+//         // Ensure we're actually in mid-resize state
+//         if !entries.is_resizing() {
+//             // If rehashing completed, skip this test - the batch was too small for the data
+//             return;
+//         }
+
+//         // Simulate saving and loading from mid-resize state
+//         let old_entries = entries.old_entries().cloned();
+//         let new_entries = (*entries.new_entries()).clone();
+//         let config = entries.config().clone();
+
+//         let loaded =
+//             DoubleArrayEntries::load_from_state(old_entries, new_entries, progress, config);
+
+//         assert!(loaded.is_resizing());
+//         assert_eq!(loaded.get_rehash_progress(), progress);
+//         assert!(loaded.occupied_count() > 0);
+
+//         // Can continue rehashing from where we left off
+//         let mut loaded = loaded;
+//         while loaded.is_resizing() {
+//             loaded.incremental_rehash_simple();
+//         }
+
+//         assert!(!loaded.is_resizing());
+//         assert_eq!(loaded.occupied_count(), 8);
+//     }
+
+//     #[test]
+//     fn test_occupied_entries_iterator_normal_state() {
+//         let data = vec![(10, 100), (20, 200), (30, 300)];
+//         let entries = create_entries_with_data(data.clone());
+
+//         let occupied: Vec<_> = entries.occupied_entries().collect();
+//         assert_eq!(occupied.len(), 3);
+
+//         // Verify all entries are found
+//         for (k_pos, v_pos) in data {
+//             let found = occupied.iter().any(|(_, entry)| {
+//                 entry.key_pos() == HeapIdx::from(k_pos as u64)
+//                     && entry.value_pos() == HeapIdx::from(v_pos as u64)
+//             });
+//             assert!(found, "Entry ({}, {}) not found", k_pos, v_pos);
+//         }
+//     }
+
+//     #[test]
+//     fn test_occupied_entries_iterator_during_resize() {
+//         let data = vec![(1, 10), (2, 20), (3, 30)];
+//         let mut entries = create_entries_with_data(data.clone());
+
+//         // Start resize but don't complete it
+//         entries.start_resize(entries.capacity() * 2).unwrap();
+//         entries.incremental_rehash_simple(); // Partially rehash
+
+//         let occupied: Vec<_> = entries.occupied_entries().collect();
+//         assert_eq!(occupied.len(), 3);
+
+//         // All original entries should still be findable
+//         for (k_pos, v_pos) in data {
+//             let found = occupied.iter().any(|(_, entry)| {
+//                 entry.key_pos() == HeapIdx::from(k_pos as u64)
+//                     && entry.value_pos() == HeapIdx::from(v_pos as u64)
+//                     && !entry.is_moved()
+//             });
+//             assert!(
+//                 found,
+//                 "Entry ({}, {}) not found or marked as moved incorrectly",
+//                 k_pos, v_pos
+//             );
+//         }
+//     }
+
+//     #[test]
+//     fn test_set_entry_updates_occupied_count() {
+//         let mut entries = create_empty_entries(8);
+//         assert_eq!(entries.occupied_count(), 0);
+
+//         // Set an occupied entry
+//         let entry = create_test_entry(1, 10);
+//         entries.set_entry(0, entry);
+//         assert_eq!(entries.occupied_count(), 1);
+
+//         // Replace with another occupied entry (count shouldn't change)
+//         let entry2 = create_test_entry(2, 20);
+//         entries.set_entry(0, entry2);
+//         assert_eq!(entries.occupied_count(), 1);
+
+//         // Set to empty entry (count should decrease)
+//         entries.set_entry(0, Entry::new());
+//         assert_eq!(entries.occupied_count(), 0);
+//     }
+
+//     #[test]
+//     fn test_rehash_progress_bounds() {
+//         let data = vec![(1, 10), (2, 20)];
+//         let mut entries = create_entries_with_data(data);
+//         let capacity = entries.capacity();
+
+//         entries.start_resize(capacity * 2).unwrap();
+
+//         // Try to set progress beyond capacity
+//         entries.set_rehash_progress(capacity + 100);
+//         assert_eq!(entries.get_rehash_progress(), capacity); // Should be clamped
+
+//         // Set valid progress
+//         entries.set_rehash_progress(capacity / 2);
+//         assert_eq!(entries.get_rehash_progress(), capacity / 2);
+//     }
+
+//     #[test]
+//     fn test_new_empty_preserves_config() {
+//         let config = ResizeConfig {
+//             load_factor_threshold: 0.6,
+//             rehash_batch_size: 16,
+//             growth_factor: 1.5,
+//         };
+
+//         let entries = create_empty_entries(8);
+//         let mut entries =
+//             DoubleArrayEntries::new_with_config((*entries.new_entries()).clone(), config.clone());
+
+//         let empty = entries.new_empty(16);
+
+//         assert_eq!(empty.capacity(), 16);
+//         assert_eq!(empty.occupied_count(), 0);
+//         assert_eq!(empty.config().load_factor_threshold, 0.6);
+//         assert_eq!(empty.config().rehash_batch_size, 16);
+//         assert_eq!(empty.config().growth_factor, 1.5);
+//     }
+
+//     #[test]
+//     fn test_dual_array_indexing() {
+//         let data = vec![(1, 10), (2, 20)];
+//         let mut entries = create_entries_with_data(data);
+//         let new_capacity = entries.capacity();
+
+//         // Start resize to get dual arrays
+//         entries.start_resize(new_capacity * 2).unwrap();
+
+//         // Test indexing in new array (indices 0 to new_capacity-1)
+//         let new_entry = create_test_entry(99, 990);
+//         entries.set_entry(0, new_entry);
+//         assert_eq!(entries.get_entry(0).key_pos(), HeapIdx::from(99u64));
+
+//         // Test indexing in old array (indices new_capacity and above)
+//         let old_index = new_capacity;
+//         let old_entry = entries.get_entry(old_index);
+//         assert!(old_entry.is_occupied() || old_entry.is_empty()); // Should be valid
+//     }
+
+//     #[test]
+//     fn test_configuration_updates() {
+//         let mut entries = create_empty_entries(8);
+
+//         let new_config = ResizeConfig {
+//             load_factor_threshold: 0.5,
+//             rehash_batch_size: 4,
+//             growth_factor: 3.0,
+//         };
+
+//         entries.set_config(new_config.clone());
+
+//         assert_eq!(entries.config().load_factor_threshold, 0.5);
+//         assert_eq!(entries.config().rehash_batch_size, 4);
+//         assert_eq!(entries.config().growth_factor, 3.0);
+//     }
+
+//     #[test]
+//     fn test_zero_capacity_handling() {
+//         let store = VecStore::new();
+
+//         // Create entries with minimal capacity
+//         let result = DoubleArrayEntries::empty_with_capacity(store, 0);
+
+//         // Should handle zero capacity gracefully
+//         if let Ok(entries) = result {
+//             assert_eq!(entries.load_factor(), 0.0);
+//             assert!(!entries.should_resize());
+//         }
+//     }
+
+//     #[test]
+//     fn test_find_slot_with_collisions() {
+//         let mut entries = create_empty_entries(4); // Small capacity to force collisions
+
+//         // Insert entries that will collide (same hash % capacity)
+//         let entry1 = create_test_entry(1, 10);
+//         let entry2 = create_test_entry(5, 50); // 5 % 4 = 1, same as 1 % 4
+
+//         entries.insert_entry(1, entry1).unwrap();
+//         entries.insert_entry(5, entry2).unwrap();
+
+//         // Both entries should be findable
+//         let result1 = entries.find_slot(1, |e| e.key_pos() == HeapIdx::from(1u64));
+//         assert!(result1.is_ok());
+
+//         let result2 = entries.find_slot(5, |e| e.key_pos() == HeapIdx::from(5u64));
+//         assert!(result2.is_ok());
+
+//         // Verify they have different indices due to collision resolution
+//         assert_ne!(result1.unwrap(), result2.unwrap());
+//     }
+// }

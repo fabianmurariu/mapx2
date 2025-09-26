@@ -1,18 +1,19 @@
 use std::hash::BuildHasher;
 use std::io;
 use std::marker::PhantomData;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use rustc_hash::FxBuildHasher;
 
 use crate::byte_store::{MMapFile, VecStore};
-use crate::entries::{DoubleArrayEntries, EntriesImpl, EntriesStorage};
+use crate::entries::{DoubleArrayEntries, EntriesState, SlotIdx};
 use crate::entry::Entry;
 use crate::error::Result;
 use crate::fixed_buffers::FixedVec;
 use crate::heap::HeapOps;
-use crate::types::{BytesDecode, BytesEncode, Native, Str};
-use crate::{ByteStore, Heap};
+use crate::types::{BytesActual, BytesDecode, BytesEncode, Native, Str};
+use crate::{ByteStore, Heap, HeapIdx};
 
 // Type aliases for common use cases
 pub type U64StringMap<BS = VecStore> = DiskHashMap<Native<u64>, Str, BS>;
@@ -64,7 +65,8 @@ where
     S: BuildHasher,
 {
     map: &'a mut DiskHashMap<K, V, BS, S>,
-    slot_idx: usize,
+    slot_idx: SlotIdx,
+    entry: Entry,
 }
 
 /// A view into a vacant entry in the map
@@ -76,7 +78,7 @@ where
     map: &'a mut DiskHashMap<K, V, BS, S>,
     key: Vec<u8>, // rethink this to be &[u8] with correct lifetime different from the map
     key_len: Option<usize>,
-    slot_idx: usize,
+    slot_idx: SlotIdx,
 }
 
 /// This is an open address hash map implementation with trait-based encoding/decoding.
@@ -90,11 +92,12 @@ where
     BS: ByteStore,
     S: BuildHasher,
 {
-    entries: EntriesImpl<BS>,
+    entries: DoubleArrayEntries<BS>,
     heap: Heap<BS>,
     capacity: usize,
     size: usize,
     hasher: S,
+    entries_size_category: usize,
     _marker: PhantomData<(K, V)>,
 }
 
@@ -120,6 +123,8 @@ impl<K, V> Default for DiskHashMap<K, V, VecStore, FxBuildHasher> {
         Self::new()
     }
 }
+
+static EMPTY_ENTRY: Entry = Entry::new();
 
 impl<K, V, BS, S> DiskHashMap<K, V, BS, S>
 where
@@ -150,14 +155,14 @@ where
         self.size as f64 / self.capacity as f64
     }
 
-    /// Returns the effective capacity for iteration purposes
-    /// During resize, this includes both old and new arrays
-    pub(crate) fn effective_capacity(&self) -> usize {
-        self.entries.effective_capacity()
-    }
+    // /// Returns the effective capacity for iteration purposes
+    // /// During resize, this includes both old and new arrays
+    // pub(crate) fn effective_capacity(&self) -> usize {
+    //     self.entries.effective_capacity()
+    // }
 
     /// Returns a reference to the entries storage (for internal use by iterators)
-    pub(crate) fn entries(&self) -> &EntriesImpl<BS> {
+    pub(crate) fn entries(&self) -> &DoubleArrayEntries<BS> {
         &self.entries
     }
 
@@ -213,34 +218,90 @@ where
         key: &[u8],
         mut eq_fn: impl FnMut(&[u8], &[u8]) -> bool,
         hash_fn: impl Fn(&[u8]) -> u64,
-    ) -> std::result::Result<usize, usize> {
+    ) -> std::result::Result<(SlotIdx, &Entry), (SlotIdx, &Entry)> {
         let hash = hash_fn(key);
-        self.entries.find_slot_with_hash(hash, |entry| {
-            if let Some(stored_key) = self.heap.get(entry.key_pos()) {
-                eq_fn(key, stored_key)
-            } else {
-                false
+        let (new_entries, old_entries) =
+            self.entries.find_entry(hash as usize, self.entries_state());
+
+        let entries_state = self.entries_state();
+        if entries_state.reindex_offset < 0 {
+            // we are not resizing, just search in the current entries array
+            // find the first entry that equals the key or is empty
+
+            for pair @ (_, entry) in new_entries {
+                if entry.is_empty() {
+                    return Err(pair);
+                }
+                if entry.is_occupied() {
+                    let key_data = self
+                        .heap
+                        .get(entry.key_pos())
+                        .expect("key must exist for occupied entry");
+                    if eq_fn(key, key_data) {
+                        return Ok(pair);
+                    }
+                }
             }
-        })
+            unreachable!("should have found an empty slot");
+        } else {
+            let mut candidate_entry = Err((SlotIdx::max(), &EMPTY_ENTRY));
+            // new entries must only be returned on the new_entries array
+            for pair @ (_, entry) in new_entries {
+                if entry.is_empty() {
+                    candidate_entry = Err(pair);
+                    break;
+                }
+                if entry.is_occupied() {
+                    let key_data = self
+                        .heap
+                        .get(entry.key_pos())
+                        .expect("key must exist for occupied entry");
+                    if eq_fn(key, key_data) {
+                        candidate_entry = Ok(pair);
+                        break;
+                    }
+                }
+            }
+
+            // need to check old entries maybe the entry exists in the old array
+            if candidate_entry.is_err() {
+                for pair @ (_, entry) in old_entries {
+                    if entry.is_empty() {
+                        break; // no need to continue, we found an empty slot
+                    }
+                    if entry.is_occupied() {
+                        let key_data = self
+                            .heap
+                            .get(entry.key_pos())
+                            .expect("key must exist for occupied entry");
+                        if eq_fn(key, key_data) {
+                            candidate_entry = Ok(pair);
+                            break;
+                        }
+                    }
+                }
+            }
+            candidate_entry
+        }
     }
 
-    /// Insert a new entry at the given slot index
-    fn insert_new_entry(
-        &mut self,
-        slot_idx: usize,
-        key_bytes: &[u8],
-        key_len: Option<usize>,
-        value_bytes: &[u8],
-        value_len: Option<usize>,
-    ) -> Result<Entry> {
-        let key_idx = self.insert_key_into_heap(key_bytes, key_len)?;
+    pub(crate) fn entries_state(&self) -> &EntriesState {
+        let es_bytes = self
+            .heap
+            .get(
+                HeapIdx::new()
+                    .with_category(self.entries_size_category as u8)
+                    .with_offset(0),
+            )
+            .expect("EntriesState must exist in heap");
+        bytemuck::from_bytes::<EntriesState>(es_bytes)
+    }
 
-        let value_idx = self.insert_value_into_heap(value_bytes, value_len)?;
-
-        let entry = Entry::occupied_at_pos(key_idx, value_idx);
-        self.entries.set_entry(slot_idx, entry);
-        self.size += 1;
-        Ok(entry)
+    fn entries_state_mut(heap: &mut Heap<BS>, esg: u8) -> &mut EntriesState {
+        let es_bytes = heap
+            .get_mut(HeapIdx::new().with_category(esg).with_offset(0))
+            .expect("EntriesState must exist in heap");
+        bytemuck::from_bytes_mut::<EntriesState>(es_bytes)
     }
 
     fn insert_key_into_heap(
@@ -306,64 +367,19 @@ where
 
         // For single array implementation, fall back to complete rehashing
         // For double array implementation, use incremental resizing
-        if self.entries.is_resizing() {
+        if self.entries.has_old_entries() {
             // Already in the middle of a resize, complete it
-            self.entries.complete_resize()?;
-        } else {
-            // Start incremental resize
-            self.entries.start_resize(new_capacity)?;
+            panic!(
+                "we are doubling the number of keys and rehashing 4 keys every entry, can we actually get to this state?"
+            );
         }
 
-        // If using double array, we can do incremental rehashing with proper key hashing
-        // For single array, we need to do complete rehashing.
-        if !self.entries.is_resizing() {
-            // Single array implementation: do complete rehashing as before
-            let mut new_entries = self.entries.new_empty(new_capacity);
-            let actual_new_capacity = new_entries.capacity();
+        let entries_size_category = self.entries_size_category;
+        let DiskHashMap { heap, .. } = self;
 
-            // Re-hash all existing entries into the new larger array
-            for i in 0..self.capacity {
-                let entry = *self.entries.get_entry(i);
-                if entry.is_occupied() {
-                    let key_data = self
-                        .heap
-                        .get(entry.key_pos())
-                        .expect("key must exist for occupied entry");
-
-                    let key_data = K::bytes_actual(key_data);
-                    let mut hasher = self.hasher.build_hasher();
-                    let hash = <K as BytesEncode>::hash_alt(key_data, &mut hasher);
-                    let mut index = hash as usize % actual_new_capacity;
-
-                    // Linear probing in the new_entries array
-                    loop {
-                        if new_entries.get_entry(index).is_empty() {
-                            new_entries.set_entry(index, entry);
-                            break;
-                        }
-                        index = (index + 1) % actual_new_capacity;
-                    }
-                }
-            }
-            self.entries = new_entries;
-            self.capacity = actual_new_capacity;
-        } else {
-            // Double array implementation: do initial batch of incremental rehashing with proper hashing
-            let _rehashed_count =
-                self.entries
-                    .incremental_rehash_with_hasher(8, |key_pos, _value_pos| {
-                        let key_data = self
-                            .heap
-                            .get(key_pos)
-                            .expect("key must exist for occupied entry");
-                        let key_data = K::bytes_actual(key_data);
-                        let mut hasher = self.hasher.build_hasher();
-                        <K as BytesEncode>::hash_alt(key_data, &mut hasher)
-                    });
-
-            // Update capacity to the effective capacity
-            self.capacity = self.entries.effective_capacity();
-        }
+        let new_state = self.entries.grow(new_capacity)?;
+        let state = Self::entries_state_mut(heap, entries_size_category as u8);
+        *state = new_state;
 
         Ok(())
     }
@@ -392,48 +408,74 @@ where
         value_bytes: &[u8],
         value_len: Option<usize>,
     ) -> Result<Option<<V as BytesDecode<'_>>::DItem>> {
-        // If we're in the middle of a resize, do some incremental rehashing
-        if self.entries.is_resizing() {
-            let _rehashed_count =
-                self.entries
-                    .incremental_rehash_with_hasher(2, |key_pos, _value_pos| {
-                        let key_data = self
-                            .heap
-                            .get(key_pos)
-                            .expect("key must exist for occupied entry");
-                        let key_data = K::bytes_actual(key_data);
-                        let mut hasher = self.hasher.build_hasher();
-                        <K as BytesEncode>::hash_alt(key_data, &mut hasher)
-                    });
-        }
-
         match self.find_slot_inner(key_bytes) {
-            Err(slot_idx) => {
+            Err((slot_idx, _)) => {
                 // Found an empty slot, insert new key-value pair
                 self.insert_new_entry(slot_idx, key_bytes, key_len, value_bytes, value_len)?;
                 Ok(None)
             }
-            Ok(slot_idx) => {
+            Ok((slot_idx, entry)) => {
                 // Key already exists, update value
-                self.update_existing_entry(slot_idx, value_bytes, value_len)
+                let entry = *entry;
+                self.update_existing_entry(slot_idx, &entry, value_bytes, value_len)
             }
         }
+    }
+
+    /// Insert a new entry at the given slot index
+    fn insert_new_entry(
+        &mut self,
+        slot_idx: SlotIdx,
+        key_bytes: &[u8],
+        key_len: Option<usize>,
+        value_bytes: &[u8],
+        value_len: Option<usize>,
+    ) -> Result<Entry> {
+        let key_idx = self.insert_key_into_heap(key_bytes, key_len)?;
+        let value_idx = self.insert_value_into_heap(value_bytes, value_len)?;
+        let mut entries_state = *(self.entries_state());
+        let DiskHashMap { entries, heap, .. } = self;
+
+        let entry = Entry::occupied_at_pos(key_idx, value_idx);
+        entries.set_entry(slot_idx, entry, &mut entries_state, |entry| {
+            let mut hasher = self.hasher.build_hasher();
+            let key_bytes = heap
+                .get(entry.key_pos())
+                .expect("key must exist for occupied entry");
+            <K as BytesEncode>::hash_alt(<K as BytesActual>::bytes_actual(key_bytes), &mut hasher)
+                as usize
+        });
+
+        // Update the entries state in the heap
+        *Self::entries_state_mut(heap, self.entries_size_category as u8) = entries_state;
+        self.size += 1;
+        Ok(entry)
     }
 
     /// Update an existing entry at the given slot index
     fn update_existing_entry(
         &mut self,
-        slot_idx: usize,
+        slot_idx: SlotIdx,
+        entry: &Entry,
         value_bytes: &[u8],
         value_len: Option<usize>,
     ) -> Result<Option<<V as BytesDecode<'_>>::DItem>> {
         let new_value_idx = self.insert_value_into_heap(value_bytes, value_len)?;
-        let old_value_idx = {
-            let entry = self.entries.get_entry_mut(slot_idx);
-            let old_value_idx = entry.value_pos();
-            entry.set_new_kv(entry.key_pos(), new_value_idx);
-            old_value_idx
-        };
+        let mut entries_state = *(self.entries_state());
+        let DiskHashMap { heap, entries, .. } = self;
+        let old_value_idx = entry.value_pos();
+        let entry = entry.with_v_pos(new_value_idx);
+
+        entries.set_entry(slot_idx, entry, &mut entries_state, |entry| {
+            let mut hasher = self.hasher.build_hasher();
+            let key_bytes = heap
+                .get(entry.key_pos())
+                .expect("key must exist for occupied entry");
+            <K as BytesEncode>::hash_alt(<K as BytesActual>::bytes_actual(key_bytes), &mut hasher)
+                as usize
+        });
+        // Update the entries state in the heap
+        *Self::entries_state_mut(heap, self.entries_size_category as u8) = entries_state;
 
         // Get the old value after the mutation
         let old_value_bytes = self
@@ -445,7 +487,10 @@ where
         Ok(Some(old_value))
     }
 
-    pub fn find_slot_inner(&self, key: &[u8]) -> std::result::Result<usize, usize> {
+    fn find_slot_inner(
+        &self,
+        key: &[u8],
+    ) -> std::result::Result<(SlotIdx, &Entry), (SlotIdx, &Entry)> {
         self.find_slot(
             key,
             |l, r| <K as BytesEncode>::eq_alt(l, r),
@@ -497,8 +542,7 @@ where
 
         let (_, key_bytes) = K::bytes_encode(key)?;
         match self.find_slot_inner(&key_bytes) {
-            Ok(slot_idx) => {
-                let entry = self.entries.get_entry(slot_idx);
+            Ok((_, entry)) => {
                 if entry.is_occupied() {
                     Ok(Some(*entry))
                 } else {
@@ -537,12 +581,16 @@ where
         }
 
         let key_bytes = key.as_ref();
-        match self.find_slot_inner(key_bytes) {
-            Ok(slot_idx) => MapEntry::Occupied(OccupiedEntry {
+        match self
+            .find_slot_inner(key_bytes)
+            .map(|(idx, entry)| (idx, *entry))
+        {
+            Ok((slot_idx, entry)) => MapEntry::Occupied(OccupiedEntry {
                 map: self,
+                entry,
                 slot_idx,
             }),
-            Err(slot_idx) => MapEntry::Vacant(VacantEntry {
+            Err((slot_idx, _)) => MapEntry::Vacant(VacantEntry {
                 map: self,
                 key: key_bytes.to_vec(),
                 key_len,
@@ -555,41 +603,24 @@ where
 impl<K, V, S: BuildHasher + Default> DiskHashMap<K, V, VecStore, S> {
     /// Creates a new in-memory HashMap
     pub fn new() -> Self {
-        let heap = Heap::new_in_memory();
+        let mut heap = Heap::new_in_memory();
         let entries = FixedVec::<Entry, _>::new(VecStore::new());
         let capacity = entries.capacity();
+        let entries_size_category = heap.find_size_category(size_of::<EntriesState>());
 
-        Self {
-            heap,
-            entries: EntriesImpl::Single(entries),
-            capacity,
-            size: 0,
-            hasher: S::default(),
-            _marker: PhantomData,
-        }
-    }
-
-    /// Creates a new in-memory HashMap with double array entries for incremental resizing
-    pub fn new_with_double_array() -> Self {
-        use crate::entries::{DoubleArrayEntries, ResizeConfig};
-
-        let heap = Heap::new_in_memory();
-        let entries = FixedVec::<Entry, _>::new(VecStore::new());
-        let capacity = entries.capacity();
-
-        let config = ResizeConfig {
-            use_double_array: true,
-            rehash_batch_size: 8,
-            ..Default::default()
+        let es = EntriesState {
+            reindex_offset: -1,
+            reindex_batch: 4,
+            occupied_count: 0,
         };
-
-        let double_entries = DoubleArrayEntries::new(entries, config.rehash_batch_size);
-
+        let idx = heap.append(bytemuck::bytes_of(&es));
+        assert_eq!(idx.offset(), 0); // should be at start of heap
         Self {
             heap,
-            entries: EntriesImpl::Double(double_entries),
+            entries: DoubleArrayEntries::new(entries),
             capacity,
             size: 0,
+            entries_size_category,
             hasher: S::default(),
             _marker: PhantomData,
         }
@@ -605,15 +636,24 @@ where
 
         let path = path.as_ref();
         let length_bytes = DEFAULT_ENTRIES_CAP * std::mem::size_of::<Entry>();
-        let heap = Heap::new(path.join("heap"))?;
+        let mut heap = Heap::new(path.join("heap"))?;
         let entries = FixedVec::<Entry, _>::new(MMapFile::new(path.join("entries"), length_bytes)?);
         let capacity = entries.capacity();
+        let es = EntriesState {
+            reindex_offset: -1,
+            reindex_batch: 4,
+            occupied_count: 0,
+        };
+        let idx = heap.append(bytemuck::bytes_of(&es));
+        assert_eq!(idx.offset(), 0); // should be at start of heap
+        let entries_size_category = heap.find_size_category(size_of::<EntriesState>());
 
         Ok(Self {
             heap,
-            entries: EntriesImpl::Double(DoubleArrayEntries::new(entries, 8)),
+            entries: DoubleArrayEntries::new(entries),
             capacity,
             size: 0,
+            entries_size_category,
             hasher: S::default(),
             _marker: PhantomData,
         })
@@ -638,15 +678,24 @@ where
 
         let length_bytes = num_entries * size_of::<Entry>();
         // Round up to nearest power of 2
-        let heap = Heap::new_with_capacity(path.join("heap"), slots_per_slab, max_bytes)?;
+        let mut heap = Heap::new_with_capacity(path.join("heap"), slots_per_slab, max_bytes)?;
         let entries = FixedVec::<Entry, _>::new(MMapFile::new(path.join("entries"), length_bytes)?);
         let capacity = entries.capacity();
+        let es = EntriesState {
+            reindex_offset: -1,
+            reindex_batch: 4,
+            occupied_count: 0,
+        };
+        let idx = heap.append(bytemuck::bytes_of(&es));
+        assert_eq!(idx.offset(), 0); // should be at start of heap
+        let entries_size_category = heap.find_size_category(size_of::<EntriesState>());
 
         Ok(Self {
             heap,
-            entries: EntriesImpl::Single(entries),
+            entries: DoubleArrayEntries::new(entries),
             capacity,
             size: 0,
+            entries_size_category,
             hasher: S::default(),
             _marker: PhantomData,
         })
@@ -655,9 +704,19 @@ where
     pub fn load_from(path: impl AsRef<Path>) -> io::Result<Self> {
         let path = path.as_ref();
         let heap = Heap::load_from(path.join("heap"))?;
+        let entries_size_category = heap.find_size_category(size_of::<EntriesState>());
+        let es_bytes = heap
+            .get(
+                HeapIdx::new()
+                    .with_category(entries_size_category as u8)
+                    .with_offset(0),
+            )
+            .expect("EntriesState must exist in heap");
+        let es = bytemuck::from_bytes::<EntriesState>(es_bytes);
+        let size = es.occupied_count as usize;
 
         // Try to find all entries files to detect if we were in the middle of a resize
-        let entries_files = Self::find_all_entries_files(path)?;
+        let mut entries_files = Self::find_all_entries_files(path)?;
 
         if entries_files.len() == 1 {
             // Single entries file - normal case
@@ -665,43 +724,37 @@ where
             let entries = FixedVec::<Entry, _>::new(MMapFile::from_file(entries_path)?);
             let capacity = entries.capacity();
 
-            let mut size = 0;
-            for i in 0..capacity {
-                if entries.get_entry(i).is_occupied() {
-                    size += 1;
-                }
-            }
-
             Ok(Self {
                 heap,
-                entries: EntriesImpl::Single(entries),
+                entries: DoubleArrayEntries::new(entries),
                 capacity,
                 size,
+                entries_size_category,
                 hasher: S::default(),
                 _marker: PhantomData,
             })
         } else {
-            // Multiple entries files - just load the largest capacity file
-            // (which should be the most current) and only count its entries
-            let latest_entries_path = entries_files.last().unwrap();
+            // sort by size then take 2, assert there are exactly 2 files
+            assert!(entries_files.len() == 2, "Expected exactly 2 entries files");
+            entries_files.sort_by_key(|path| {
+                let meta = std::fs::metadata(path)
+                    .unwrap_or_else(|_| panic!("File {path:?} does not exist"));
+                meta.size()
+            });
+            let latest_entries_path = &entries_files[1];
             let latest_entries =
                 FixedVec::<Entry, _>::new(MMapFile::from_file(latest_entries_path)?);
-            let capacity = latest_entries.capacity();
-
-            // Only count entries in the latest file - this should be authoritative
-            let mut size = 0;
-            for i in 0..capacity {
-                let entry = latest_entries.get_entry(i);
-                if entry.is_occupied() {
-                    size += 1;
-                }
-            }
+            let capacity = latest_entries.len();
+            let oldest_entries_path = &entries_files[0];
+            let oldest_entries =
+                FixedVec::<Entry, _>::new(MMapFile::from_file(oldest_entries_path)?);
 
             Ok(Self {
                 heap,
-                entries: EntriesImpl::Single(latest_entries),
-                capacity,
+                entries: DoubleArrayEntries::new_with_old(oldest_entries, latest_entries),
                 size,
+                entries_size_category,
+                capacity,
                 hasher: S::default(),
                 _marker: PhantomData,
             })
@@ -764,19 +817,17 @@ where
 {
     /// Get a reference to the key in the entry
     fn key_bytes(&self) -> &[u8] {
-        let entry = self.map.entries.get_entry(self.slot_idx);
         self.map
             .heap
-            .get(entry.key_pos())
+            .get(self.entry.key_pos())
             .expect("key must exist for occupied entry")
     }
 
     /// Get a reference to the value in the entry
     fn value_bytes(&self) -> &[u8] {
-        let entry = self.map.entries.get_entry(self.slot_idx);
         self.map
             .heap
-            .get(entry.value_pos())
+            .get(self.entry.value_pos())
             .expect("value must exist for occupied entry")
     }
 }
@@ -809,7 +860,7 @@ where
         value: V2,
     ) -> Result<<V as BytesDecode<'a>>::DItem> {
         self.map
-            .update_existing_entry(self.slot_idx, value.as_ref(), len)
+            .update_existing_entry(self.slot_idx, &self.entry, value.as_ref(), len)
             .map(|r| r.unwrap())
     }
 
@@ -845,6 +896,8 @@ where
     BS: ByteStore,
     S: BuildHasher + Default,
     Heap<BS>: HeapOps<BS>,
+    K: for<'b> BytesEncode<'b> + for<'b> BytesDecode<'b>,
+    V: for<'b> BytesEncode<'b> + for<'b> BytesDecode<'b>,
 {
     /// Insert the value into the vacant entry, returning a reference to the inserted value
     fn insert_bytes<V2: AsRef<[u8]>>(self, len: Option<usize>, value: V2) -> Result<&'a [u8]> {
@@ -868,7 +921,7 @@ impl<'a, K, V, BS, S> VacantEntry<'a, K, V, BS, S>
 where
     BS: ByteStore,
     S: BuildHasher + Default,
-    K: for<'b> BytesEncode<'b>,
+    K: for<'b> BytesEncode<'b> + for<'b> BytesDecode<'b>,
     V: for<'b> BytesEncode<'b> + for<'b> BytesDecode<'b>,
     Heap<BS>: HeapOps<BS>,
 {
@@ -1229,6 +1282,25 @@ mod tests {
         proptest!(|(values in small_hash_map_prop)|{
             check_prop(values);
         });
+    }
+
+    #[test]
+    fn it_s_a_hash_disk_map_0() {
+        let mut expected = StdHashMap::new();
+        expected.insert(vec![2], vec![0]);
+        expected.insert(vec![6], vec![0]);
+        expected.insert(vec![7], vec![0]);
+        expected.insert(vec![4], vec![0]);
+        expected.insert(vec![9], vec![0]);
+        expected.insert(vec![10], vec![0]);
+        expected.insert(vec![11], vec![0]);
+        expected.insert(vec![3], vec![0]);
+        expected.insert(vec![12], vec![0]);
+        expected.insert(vec![5], vec![0]);
+        expected.insert(vec![0], vec![0]);
+        expected.insert(vec![8], vec![0]);
+        expected.insert(vec![1], vec![0]);
+        check_prop(expected);
     }
 
     #[test]
@@ -1821,431 +1893,6 @@ mod tests {
         assert!(result.is_err());
         if let Err(err) = result {
             assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
-        }
-    }
-
-    fn check_prop_double_array(hm: StdHashMap<Vec<u8>, Vec<u8>>) {
-        let mut map: BytesHM = DiskHashMap::new_with_double_array();
-
-        // Insert all key-value pairs from the StdHashMap
-        let mut already_inserted = vec![];
-        for (k, v) in hm.iter() {
-            map.insert(k, v).unwrap();
-            already_inserted.push((k.clone(), v.clone()));
-            for (k, v) in &already_inserted {
-                let entry = map.entry(k).unwrap();
-                assert!(entry.is_occupied(), "Expected occupied entry {k:?}:{v:?}");
-                assert_eq!(entry.key(), k);
-                match entry {
-                    MapEntry::Occupied(occupied) => {
-                        assert_eq!(occupied.value().unwrap(), v);
-                        assert_eq!(occupied.key().unwrap(), k);
-                    }
-                    MapEntry::Vacant(_) => panic!("Expected occupied entry"),
-                }
-            }
-
-            // Verify iterator returns exactly the inserted items at this point
-            let mut iter_items = std::collections::HashSet::new();
-            for result in map.iter() {
-                let (key_bytes, value_bytes) = result.unwrap();
-                iter_items.insert((key_bytes.to_vec(), value_bytes.to_vec()));
-            }
-
-            // Convert already_inserted to HashSet for comparison
-            let expected_items: std::collections::HashSet<_> =
-                already_inserted.iter().cloned().collect();
-
-            // Verify iterator has exactly the same items as inserted so far
-            assert_eq!(
-                iter_items.len(),
-                expected_items.len(),
-                "Iterator count mismatch after {} insertions",
-                already_inserted.len()
-            );
-
-            // Check every item from iterator exists in expected
-            for (key, value) in &iter_items {
-                assert!(
-                    expected_items.contains(&(key.clone(), value.clone())),
-                    "Iterator returned unexpected item after {} insertions: key={:?}, value={:?}",
-                    already_inserted.len(),
-                    key,
-                    value
-                );
-            }
-
-            // Check every expected item exists in iterator results
-            for (key, value) in &expected_items {
-                assert!(
-                    iter_items.contains(&(key.clone(), value.clone())),
-                    "Iterator missing expected item after {} insertions: key={:?}, value={:?}",
-                    already_inserted.len(),
-                    key,
-                    value
-                );
-            }
-        }
-
-        // Check the size of the map
-        assert_eq!(map.len(), hm.len());
-
-        // Check that all values can be retrieved
-        for (k, v) in hm.iter() {
-            assert_eq!(
-                map.get(k.as_slice()).unwrap(),
-                Some(v.as_slice()),
-                "key: {k:?}"
-            );
-        }
-
-        // Verify iterator returns exactly the inserted items
-        let mut iter_items = std::collections::HashSet::new();
-        for result in map.iter() {
-            let (key_bytes, value_bytes) = result.unwrap();
-            iter_items.insert((key_bytes.to_vec(), value_bytes.to_vec()));
-        }
-
-        // Convert already_inserted to HashSet for comparison
-        let expected_items: std::collections::HashSet<_> = already_inserted.into_iter().collect();
-
-        // Verify iterator has exactly the same items as inserted
-        assert_eq!(
-            iter_items.len(),
-            expected_items.len(),
-            "Iterator count mismatch"
-        );
-
-        // Check every item from iterator exists in expected
-        for (key, value) in &iter_items {
-            assert!(
-                expected_items.contains(&(key.clone(), value.clone())),
-                "Iterator returned unexpected item: key={:?}, value={:?}",
-                key,
-                value
-            );
-        }
-
-        // Check every expected item exists in iterator results
-        for (key, value) in &expected_items {
-            assert!(
-                iter_items.contains(&(key.clone(), value.clone())),
-                "Iterator missing expected item: key={:?}, value={:?}",
-                key,
-                value
-            );
-        }
-
-        // Verify that we're actually using double array entries
-        match &map.entries {
-            EntriesImpl::Double(_) => {} // Good!
-            EntriesImpl::Single(_) => panic!("Expected double array entries"),
-        }
-    }
-
-    fn check_prop_double_array_native(hm: StdHashMap<u64, u64>) {
-        let mut map: DiskHashMap<Native<u64>, Native<u64>, VecStore, FxBuildHasher> =
-            DiskHashMap::new_with_double_array();
-
-        // Insert all key-value pairs from the StdHashMap
-        let mut already_inserted = vec![];
-        for (k, v) in hm.iter() {
-            map.insert(k, v).unwrap();
-            already_inserted.push((*k, *v));
-            for (k, v) in &already_inserted {
-                assert_eq!(map.get(k).unwrap(), Some(*v), "key: {k:?}");
-
-                let entry = map.entry(k).unwrap();
-                assert!(entry.is_occupied());
-                assert_eq!(entry.key(), *k);
-                match entry {
-                    MapEntry::Occupied(occupied) => {
-                        assert_eq!(occupied.value().unwrap(), *v);
-                        assert_eq!(occupied.key().unwrap(), *k)
-                    }
-                    MapEntry::Vacant(_) => panic!("Expected occupied entry"),
-                }
-            }
-
-            // Verify iterator returns exactly the inserted items at this point
-            let mut iter_items = std::collections::HashSet::new();
-            for result in map.iter() {
-                let (key, value) = result.unwrap();
-                iter_items.insert((key, value));
-            }
-
-            // Convert already_inserted to HashSet for comparison
-            let expected_items: std::collections::HashSet<_> =
-                already_inserted.iter().cloned().collect();
-
-            // Verify iterator has exactly the same items as inserted so far
-            assert_eq!(
-                iter_items.len(),
-                expected_items.len(),
-                "Iterator count mismatch after {} insertions",
-                already_inserted.len()
-            );
-
-            // Check every item from iterator exists in expected
-            for (key, value) in &iter_items {
-                assert!(
-                    expected_items.contains(&(*key, *value)),
-                    "Iterator returned unexpected item after {} insertions: key={:?}, value={:?}",
-                    already_inserted.len(),
-                    key,
-                    value
-                );
-            }
-
-            // Check every expected item exists in iterator results
-            for (key, value) in &expected_items {
-                assert!(
-                    iter_items.contains(&(*key, *value)),
-                    "Iterator missing expected item after {} insertions: key={:?}, value={:?}",
-                    already_inserted.len(),
-                    key,
-                    value
-                );
-            }
-        }
-
-        // Check the size of the map
-        assert_eq!(map.len(), hm.len());
-
-        // Check that all values can be retrieved
-        for (k, v) in hm.iter() {
-            assert_eq!(map.get(k).unwrap(), Some(*v), "key: {k:?}");
-        }
-
-        // Verify iterator returns exactly the inserted items
-        let mut iter_items = std::collections::HashSet::new();
-        for result in map.iter() {
-            let (key, value) = result.unwrap();
-            iter_items.insert((key, value));
-        }
-
-        // Convert already_inserted to HashSet for comparison
-        let expected_items: std::collections::HashSet<_> = already_inserted.into_iter().collect();
-
-        // Verify iterator has exactly the same items as inserted
-        assert_eq!(
-            iter_items.len(),
-            expected_items.len(),
-            "Iterator count mismatch"
-        );
-
-        // Check every item from iterator exists in expected
-        for (key, value) in &iter_items {
-            assert!(
-                expected_items.contains(&(*key, *value)),
-                "Iterator returned unexpected item: key={:?}, value={:?}",
-                key,
-                value
-            );
-        }
-
-        // Check every expected item exists in iterator results
-        for (key, value) in &expected_items {
-            assert!(
-                iter_items.contains(&(*key, *value)),
-                "Iterator missing expected item: key={:?}, value={:?}",
-                key,
-                value
-            );
-        }
-
-        // Verify that we're actually using double array entries
-        match &map.entries {
-            EntriesImpl::Double(_) => {} // Good!
-            EntriesImpl::Single(_) => panic!("Expected double array entries"),
-        }
-    }
-
-    #[test]
-    fn it_s_a_hash_map_double_array() {
-        let small_hash_map_prop = proptest::collection::hash_map(
-            proptest::collection::vec(0u8..255, 1..32),
-            proptest::collection::vec(0u8..255, 1..32),
-            1..250,
-        );
-
-        proptest!(|(values in small_hash_map_prop)|{
-            check_prop_double_array(values);
-        });
-    }
-
-    #[test]
-    fn it_s_a_hash_map_double_array_native() {
-        let small_hash_map_prop = proptest::collection::hash_map(
-            proptest::num::u64::ANY,
-            proptest::num::u64::ANY,
-            1..250,
-        );
-
-        proptest!(|(values in small_hash_map_prop)|{
-            check_prop_double_array_native(values);
-        });
-    }
-
-    #[test]
-    fn it_s_a_hash_map_double_array_0() {
-        let mut hm = StdHashMap::new();
-        hm.insert(vec![0u8], vec![0u8]);
-        check_prop_double_array(hm);
-    }
-
-    #[test]
-    fn it_s_a_hash_map_double_array_native_0() {
-        let mut hm = StdHashMap::new();
-        hm.insert(0u64, 1u64);
-        check_prop_double_array_native(hm);
-    }
-
-    #[test]
-    fn test_double_array_incremental_resize() {
-        let mut map: BytesHM = DiskHashMap::new_with_double_array();
-
-        // Verify we start with double array
-        match &map.entries {
-            EntriesImpl::Double(_) => {}
-            EntriesImpl::Single(_) => panic!("Expected double array entries"),
-        }
-
-        let initial_capacity = map.capacity();
-
-        // Insert enough items to trigger multiple resize operations
-        let mut keys_values = Vec::new();
-        for i in 0u32..50 {
-            let key = format!("key_{i}");
-            let value = format!("value_{i}");
-            keys_values.push((key.clone(), value.clone()));
-
-            let old_len = map.len();
-            map.insert(key.as_bytes(), value.as_bytes()).unwrap();
-            assert_eq!(map.len(), old_len + 1);
-
-            // Verify we can still access all previously inserted keys
-            for (k, v) in &keys_values {
-                assert_eq!(
-                    map.get(k.as_bytes()).unwrap(),
-                    Some(v.as_bytes()),
-                    "Failed to retrieve key {k} after inserting {key}"
-                );
-            }
-        }
-
-        // Capacity should have grown (triggered resize)
-        assert!(
-            map.capacity() > initial_capacity,
-            "Expected capacity {} > initial {}",
-            map.capacity(),
-            initial_capacity
-        );
-
-        // Verify all keys and values are still accessible
-        for (key, value) in &keys_values {
-            assert_eq!(
-                map.get(key.as_bytes()).unwrap(),
-                Some(value.as_bytes()),
-                "key: {key}"
-            );
-        }
-
-        assert_eq!(map.len(), keys_values.len());
-    }
-
-    #[test]
-    fn test_double_array_iterator_across_resize() {
-        let mut map: BytesHM = DiskHashMap::new_with_double_array();
-
-        // Insert initial data
-        let mut expected_items = std::collections::HashSet::new();
-        for i in 0u32..15 {
-            let key = format!("key_{i}");
-            let value = format!("value_{i}");
-            map.insert(key.as_bytes(), value.as_bytes()).unwrap();
-            expected_items.insert((key, value));
-        }
-
-        // Verify iterator before resize
-        let mut iter_items = std::collections::HashSet::new();
-        for result in map.iter() {
-            let (key_bytes, value_bytes) = result.unwrap();
-            let key = String::from_utf8(key_bytes.to_vec()).unwrap();
-            let value = String::from_utf8(value_bytes.to_vec()).unwrap();
-            iter_items.insert((key, value));
-        }
-
-        assert_eq!(iter_items, expected_items);
-
-        // Force resize by adding more items
-        for i in 15u32..25 {
-            let key = format!("key_{i}");
-            let value = format!("value_{i}");
-            map.insert(key.as_bytes(), value.as_bytes()).unwrap();
-            expected_items.insert((key, value));
-        }
-
-        // Verify iterator after resize
-        iter_items.clear();
-        for result in map.iter() {
-            let (key_bytes, value_bytes) = result.unwrap();
-            let key = String::from_utf8(key_bytes.to_vec()).unwrap();
-            let value = String::from_utf8(value_bytes.to_vec()).unwrap();
-            iter_items.insert((key, value));
-        }
-
-        assert_eq!(iter_items, expected_items);
-        assert_eq!(iter_items.len(), 25);
-    }
-
-    #[test]
-    fn test_double_array_resize_state_transitions() {
-        let mut map: DiskHashMap<Native<u64>, Native<u64>, VecStore, FxBuildHasher> =
-            DiskHashMap::new_with_double_array();
-
-        // Start in normal state
-        match &map.entries {
-            EntriesImpl::Double(entries) => {
-                assert!(!entries.is_resizing(), "Should not be resizing initially");
-                assert_eq!(entries.effective_capacity(), entries.capacity());
-            }
-            EntriesImpl::Single(_) => panic!("Expected double array entries"),
-        }
-
-        // Fill up to trigger resize
-        let initial_capacity = map.capacity();
-        let resize_threshold = (initial_capacity as f64 * 0.4) as usize;
-
-        // Insert up to the threshold
-        for i in 0u64..(resize_threshold + 5) as u64 {
-            map.insert(&i, &(i * 2)).unwrap();
-
-            // Verify all previous keys are accessible
-            for j in 0..=i {
-                assert_eq!(
-                    map.get(&j).unwrap(),
-                    Some(j * 2),
-                    "Key {j} not found after inserting {i}"
-                );
-            }
-        }
-
-        // Should have triggered a resize
-        assert!(
-            map.capacity() > initial_capacity,
-            "Expected resize: capacity {} should be > {}",
-            map.capacity(),
-            initial_capacity
-        );
-
-        // Final verification: all keys should be accessible
-        for i in 0u64..(resize_threshold + 5) as u64 {
-            assert_eq!(
-                map.get(&i).unwrap(),
-                Some(i * 2),
-                "Key {i} not found in final verification"
-            );
         }
     }
 

@@ -14,6 +14,8 @@ pub trait ByteStore: AsRef<[u8]> + AsMut<[u8]> {
 
     // returns the number of resize events
     fn stats(&self) -> u64;
+
+    fn purge(self);
 }
 
 #[derive(Debug, Clone, Default)]
@@ -64,6 +66,8 @@ impl ByteStore for VecStore {
     fn stats(&self) -> u64 {
         self.resizes
     }
+
+    fn purge(self) {}
 }
 
 impl<const N: usize> ByteStore for [u8; N] {
@@ -80,6 +84,8 @@ impl<const N: usize> ByteStore for [u8; N] {
     fn stats(&self) -> u64 {
         0
     }
+
+    fn purge(self) {}
 }
 
 impl ByteStore for Box<[u8]> {
@@ -102,6 +108,8 @@ impl ByteStore for Box<[u8]> {
     fn stats(&self) -> u64 {
         0 // Not tracked for Box<[u8]> directly
     }
+
+    fn purge(self) {}
 }
 
 pub struct MMapFile {
@@ -262,6 +270,12 @@ impl ByteStore for MMapFile {
 
     fn stats(&self) -> u64 {
         self.resizes
+    }
+
+    fn purge(self) {
+        let path = self.path.clone();
+        drop(self);
+        let _ = std::fs::remove_file(&path);
     }
 }
 

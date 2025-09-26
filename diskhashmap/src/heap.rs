@@ -173,6 +173,16 @@ impl<S: ByteStore> Slab<S> {
         Some(&self.store.as_ref()[pos_range])
     }
 
+    pub fn get_mut(&mut self, offset: u64) -> Option<&mut [u8]> {
+        let offset = offset as usize;
+        if offset >= self.count {
+            return None;
+        }
+
+        let pos_range = self.resolve_pos(offset);
+        Some(&mut self.store.as_mut()[pos_range])
+    }
+
     pub fn len(&self) -> usize {
         self.count
     }
@@ -191,10 +201,10 @@ impl<S: ByteStore> Slab<S> {
 
         let pos_range = self.resolve_pos(offset);
         let target_slice = &mut self.store.as_mut()[pos_range];
-        
+
         // Clear the existing data first
         target_slice.fill(0);
-        
+
         // Copy the new data
         if data.len() <= target_slice.len() {
             target_slice[..data.len()].copy_from_slice(data);
@@ -395,6 +405,13 @@ where
         self.slabs.get(category)?.as_ref()?.get(offset)
     }
 
+    pub(crate) fn get_mut(&mut self, index: HeapIdx) -> Option<&mut [u8]> {
+        let category = index.category() as usize;
+        let offset = index.offset();
+
+        self.slabs.get_mut(category)?.as_mut()?.get_mut(offset)
+    }
+
     pub fn len(&self) -> usize {
         self.slabs
             .iter()
@@ -420,7 +437,7 @@ where
         }
     }
 
-    fn find_size_category(&self, size: usize) -> usize {
+    pub(crate) fn find_size_category(&self, size: usize) -> usize {
         match SLAB_SIZES.binary_search(&size) {
             Ok(index) => index,
             Err(index) => {
@@ -432,7 +449,6 @@ where
             }
         }
     }
-
 }
 
 pub trait HeapOps<S: ByteStore> {

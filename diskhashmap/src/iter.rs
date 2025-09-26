@@ -52,7 +52,7 @@ where
         // Find next occupied entry
         while self.current_index < self.map.effective_capacity() {
             let entry = &self.map.entries()[self.current_index];
-            
+
             if entry.is_occupied() && !entry.is_moved() {
                 // Get key and value from heap
                 let key_bytes = match self.map.heap().get(entry.key_pos()) {
@@ -60,7 +60,7 @@ where
                     None => {
                         self.current_index += 1;
                         return Some(Err(crate::error::DiskMapError::Decoding(
-                            "Key not found in heap".to_string()
+                            "Key not found in heap".to_string(),
                         )));
                     }
                 };
@@ -70,7 +70,7 @@ where
                     None => {
                         self.current_index += 1;
                         return Some(Err(crate::error::DiskMapError::Decoding(
-                            "Value not found in heap".to_string()
+                            "Value not found in heap".to_string(),
                         )));
                     }
                 };
@@ -135,7 +135,7 @@ where
     BS: ByteStore,
     S: BuildHasher,
 {
-    pub(crate) fn new(map: &'a DiskHashMap<K, V, BS, S>) -> Self 
+    pub(crate) fn new(map: &'a DiskHashMap<K, V, BS, S>) -> Self
     where
         Heap<BS>: HeapOps<BS>,
     {
@@ -191,7 +191,7 @@ where
     BS: ByteStore,
     S: BuildHasher,
 {
-    pub(crate) fn new(map: &'a DiskHashMap<K, V, BS, S>) -> Self 
+    pub(crate) fn new(map: &'a DiskHashMap<K, V, BS, S>) -> Self
     where
         Heap<BS>: HeapOps<BS>,
     {
@@ -232,4 +232,3 @@ where
         self.inner.len()
     }
 }
-

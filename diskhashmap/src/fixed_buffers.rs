@@ -9,7 +9,6 @@ use crate::byte_store::ByteStore;
 
 /// A vector backed by a ByteStore that only accepts types `T` which are Pod (Plain Old Data)
 /// and can be represented as a slice of bytes.
-#[derive(Clone)]
 pub struct FixedVec<T, S: ByteStore> {
     store: S,
     capacity: usize,
@@ -42,6 +41,24 @@ where
             capacity,
             _marker: PhantomData,
         }
+    }
+
+    pub fn new_with_capacity(store: S, capacity: usize) -> Self {
+        let t_size = std::mem::size_of::<T>();
+        let required_bytes = capacity * t_size;
+        assert!(
+            store.as_ref().len() >= required_bytes,
+            "Store does not have enough capacity"
+        );
+        Self {
+            store,
+            capacity,
+            _marker: PhantomData,
+        }
+    }
+
+    pub(crate) fn purge(self) {
+        self.store.purge();
     }
 
     pub fn capacity(&self) -> usize {
