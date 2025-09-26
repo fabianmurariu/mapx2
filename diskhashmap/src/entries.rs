@@ -49,11 +49,11 @@ mod slot_idx_test {
 #[cfg(test)]
 mod double_array_entries_tests {
     use super::*;
-    use crate::byte_store::{VecStore, MMapFile};
-    use crate::entry::{Entry, Status, PaddedStatus};
     use crate::HeapIdx;
-    use tempfile::TempDir;
+    use crate::byte_store::{MMapFile, VecStore};
+    use crate::entry::{Entry, PaddedStatus, Status};
     use std::collections::HashMap;
+    use tempfile::TempDir;
 
     fn create_vec_store(capacity: usize) -> VecStore {
         let bytes_needed = capacity * std::mem::size_of::<Entry>();
@@ -180,14 +180,17 @@ mod double_array_entries_tests {
         // Insert a new entry, which should trigger reindexing
         let new_entry = create_test_entry(999, 888);
         double_entries.set_entry(SlotIdx::new(0), new_entry, &mut state, |entry| {
-            (u64::from(entry.key_pos()) as usize) % 8  // Simple hash function for testing
+            (u64::from(entry.key_pos()) as usize) % 8 // Simple hash function for testing
         });
 
         // After the first insertion following grow, reindexing should have started and possibly completed
         // If there are still old entries, we're in the middle of reindexing
         // If there are no old entries, reindexing completed in one batch
         if double_entries.has_old_entries() {
-            assert!(state.reindex_offset >= 0, "Should be in reindexing mode with reindex_offset >= 0");
+            assert!(
+                state.reindex_offset >= 0,
+                "Should be in reindexing mode with reindex_offset >= 0"
+            );
         } else {
             // Reindexing completed immediately due to small batch size
             assert_eq!(state.reindex_offset, -1, "Should have completed reindexing");
@@ -270,8 +273,19 @@ mod double_array_entries_tests {
         }
 
         // Test iterator in normal state
-        let iter_entries: Vec<_> = double_entries.iter(-1, state.occupied_count as usize).collect();
+        let iter_entries: Vec<_> = double_entries
+            .iter(-1, state.occupied_count as usize)
+            .collect();
         assert_eq!(iter_entries.len(), 3);
+        let actual = iter_entries
+            .iter()
+            .map(|(_, entry)| (u64::from(entry.key_pos()), u64::from(entry.value_pos())))
+            .collect::<Vec<_>>();
+        let expected = test_entries
+            .iter()
+            .map(|(_, entry)| (u64::from(entry.key_pos()), u64::from(entry.value_pos())))
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected);
 
         // All entries should be marked as "new" (not old)
         for (slot_idx, _) in &iter_entries {
@@ -303,7 +317,9 @@ mod double_array_entries_tests {
         state.occupied_count = 3; // Reset for iteration
 
         // Test iterator shows old entries
-        let iter_entries: Vec<_> = double_entries.iter(0, state.occupied_count as usize).collect();
+        let iter_entries: Vec<_> = double_entries
+            .iter(0, state.occupied_count as usize)
+            .collect();
         assert_eq!(iter_entries.len(), 3);
 
         // All should be from old array
@@ -365,7 +381,11 @@ mod double_array_entries_tests {
         // Verify all entries can be retrieved
         for (slot_idx, (expected_key, expected_val)) in &inserted_entries {
             let retrieved = double_entries.get_entry(SlotIdx::new(*slot_idx));
-            assert!(retrieved.is_some(), "Entry at slot {} should exist", slot_idx);
+            assert!(
+                retrieved.is_some(),
+                "Entry at slot {} should exist",
+                slot_idx
+            );
             let entry = retrieved.unwrap();
             assert_eq!(entry.key_pos(), HeapIdx::from(*expected_key));
             assert_eq!(entry.value_pos(), HeapIdx::from(*expected_val));
@@ -438,7 +458,8 @@ mod double_array_entries_tests {
         let new_store_loaded = MMapFile::from_file(&new_file_path).unwrap();
         let new_entries_loaded = FixedVec::new(new_store_loaded);
 
-        let double_entries = DoubleArrayEntries::new_with_old(old_entries_loaded, new_entries_loaded);
+        let double_entries =
+            DoubleArrayEntries::new_with_old(old_entries_loaded, new_entries_loaded);
 
         // Verify we can access both old and new entries
         assert!(double_entries.has_old_entries());
@@ -464,26 +485,56 @@ mod double_array_entries_tests {
             occupied_count: 0,
         };
 
+        // Store original entries for verification
+        let original_entries = vec![
+            (0, 0, 0),     // slot, key_pos, val_pos
+            (1, 100, 200),
+            (2, 200, 400),
+            (3, 300, 600),
+        ];
+
         // Fill original array completely
-        for i in 0..4 {
-            let entry = create_test_entry(i * 100, i * 200);
-            double_entries.set_entry(SlotIdx::new(i as usize), entry, &mut state, |_| 0);
+        for (slot, key_pos, val_pos) in &original_entries {
+            let entry = create_test_entry(*key_pos, *val_pos);
+            double_entries.set_entry(SlotIdx::new(*slot), entry, &mut state, |_| 0);
             state.occupied_count += 1;
+        }
+
+        // Verify original entries are accessible before grow
+        for (slot, key_pos, val_pos) in &original_entries {
+            let retrieved = double_entries.get_entry(SlotIdx::new(*slot));
+            assert!(retrieved.is_some());
+            assert_eq!(retrieved.unwrap().key_pos(), HeapIdx::from(*key_pos));
+            assert_eq!(retrieved.unwrap().value_pos(), HeapIdx::from(*val_pos));
         }
 
         // Grow
         state = double_entries.grow(8).unwrap();
         assert!(double_entries.has_old_entries());
 
+        // Verify original entries are still accessible via old indices after grow
+        for (slot, key_pos, val_pos) in &original_entries {
+            let retrieved = double_entries.get_entry(SlotIdx::old(*slot));
+            assert!(retrieved.is_some(), "Original entry at slot {} should be accessible via old index", slot);
+            assert_eq!(retrieved.unwrap().key_pos(), HeapIdx::from(*key_pos));
+            assert_eq!(retrieved.unwrap().value_pos(), HeapIdx::from(*val_pos));
+        }
+
         // Track entries moved during reindexing
         let mut insertions = 0;
 
-        // Force complete reindexing by inserting entries
+        // Force complete reindexing by inserting dummy entries
         while double_entries.has_old_entries() {
             let dummy_entry = create_test_entry(9999, 8888);
-            double_entries.set_entry(SlotIdx::new(insertions % 8), dummy_entry, &mut state, |entry| {
-                (u64::from(entry.key_pos()) as usize) % 8  // Simple hash for testing
-            });
+            double_entries.set_entry(
+                SlotIdx::new(insertions % 8),
+                dummy_entry,
+                &mut state,
+                |entry| {
+                    // Simple hash function for reindexing
+                    (u64::from(entry.key_pos()) as usize) % 8
+                },
+            );
             insertions += 1;
 
             // Safety check to prevent infinite loop
@@ -493,6 +544,35 @@ mod double_array_entries_tests {
         // Verify old entries are cleaned up
         assert!(!double_entries.has_old_entries());
         assert_eq!(state.reindex_offset, -1);
+
+        // Verify all original entries are still accessible after reindexing
+        // They may have moved to different slots due to hash collisions with dummy entries
+        let mut found_originals = std::collections::HashSet::new();
+
+        // Search through all slots in the new array to find our original entries
+        for slot in 0..8 {
+            if let Some(entry) = double_entries.get_entry(SlotIdx::new(slot)) {
+                if entry.is_occupied() {
+                    let key_pos = u64::from(entry.key_pos());
+                    let val_pos = u64::from(entry.value_pos());
+
+                    // Check if this is one of our original entries
+                    for (orig_slot, orig_key, orig_val) in &original_entries {
+                        if key_pos == *orig_key && val_pos == *orig_val {
+                            found_originals.insert(*orig_slot);
+                            // Verify the entry data is still correct
+                            assert_eq!(entry.key_pos(), HeapIdx::from(*orig_key));
+                            assert_eq!(entry.value_pos(), HeapIdx::from(*orig_val));
+                            assert!(entry.is_occupied());
+                        }
+                    }
+                }
+            }
+        }
+
+        // Verify we found all original entries in the new array
+        assert_eq!(found_originals.len(), original_entries.len(),
+                   "All original entries should be found after reindexing. Found: {:?}", found_originals);
     }
 
     #[test]
@@ -508,7 +588,12 @@ mod double_array_entries_tests {
         };
 
         // Test different entry states
-        double_entries.set_entry(SlotIdx::new(0), create_test_entry(100, 200), &mut state, |_| 0);
+        double_entries.set_entry(
+            SlotIdx::new(0),
+            create_test_entry(100, 200),
+            &mut state,
+            |_| 0,
+        );
         double_entries.set_entry(SlotIdx::new(1), create_deleted_entry(), &mut state, |_| 0);
         double_entries.set_entry(SlotIdx::new(2), create_moved_entry(), &mut state, |_| 0);
 
@@ -838,9 +923,7 @@ impl<BS: ByteStore> DoubleArrayEntries<BS> {
         state: &mut EntriesState,
         reindex_callback: impl Fn(&Entry) -> usize,
     ) {
-        // TODO: handle when SlotIdx is old
         let items = self.new_entries.as_mut();
-        // let index = hash % items.len();
         fn insert_into_entries(items: &mut [Entry], index: SlotIdx, entry: Entry) {
             // fast path for empty slot
             let index = index.value();
