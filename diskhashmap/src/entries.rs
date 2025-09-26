@@ -102,6 +102,35 @@ impl<BS: ByteStore> DoubleArrayEntries<BS> {
         self.old_entries.is_some()
     }
 
+    pub(crate) fn iter(
+        &self,
+        reindex_offset: i64,
+        occupied_count: usize,
+    ) -> impl Iterator<Item = (SlotIdx, &Entry)> {
+        if self.has_old_entries() {
+            assert!(reindex_offset >= 0);
+        } else {
+            assert!(reindex_offset < 0);
+        }
+        let old_slice = self
+            .old_entries
+            .as_ref()
+            .into_iter()
+            .flat_map(move |old| &old[reindex_offset as usize..]);
+
+        let new_slice = self.new_entries.as_ref().iter();
+        old_slice
+            .enumerate()
+            .map(move |(i, entry)| (SlotIdx::old(i + reindex_offset as usize), entry))
+            .chain(
+                new_slice
+                    .enumerate()
+                    .map(|(i, entry)| (SlotIdx::new(i), entry)),
+            )
+            .filter(|(_, entry)| entry.is_occupied())
+            .take(occupied_count)
+    }
+
     pub(crate) fn grow(&mut self, new_capacity: usize) -> Result<EntriesState> {
         let new_entries = self.new_entries.new_empty(new_capacity);
         let old_entries = std::mem::replace(&mut self.new_entries, new_entries);

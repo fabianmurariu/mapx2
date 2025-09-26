@@ -172,33 +172,55 @@ where
     }
 
     /// Returns an iterator over the key-value pairs of the map.
-    pub fn iter(&self) -> crate::iter::Iter<'_, K, V, BS, S>
+    pub fn iter<'a>(
+        &'a self,
+    ) -> impl Iterator<Item = Result<(<K as BytesDecode<'a>>::DItem, <V as BytesDecode<'a>>::DItem)>> + '_
     where
-        K: for<'a> BytesDecode<'a>,
-        V: for<'a> BytesDecode<'a>,
+        K: for<'b> BytesDecode<'b>,
+        V: for<'b> BytesDecode<'b>,
         Heap<BS>: HeapOps<BS>,
     {
-        crate::iter::Iter::new(self)
+        // crate::iter::Iter::new(self)
+        let EntriesState {
+            reindex_offset,
+            occupied_count,
+            ..
+        } = *self.entries_state();
+        self.entries()
+            .iter(reindex_offset, occupied_count as usize)
+            .map(|(_, entry)| {
+                let key_bytes = self
+                    .heap
+                    .get(entry.key_pos())
+                    .expect("key must exist for occupied entry");
+                let value_bytes = self
+                    .heap
+                    .get(entry.value_pos())
+                    .expect("value must exist for occupied entry");
+                let key = K::bytes_decode(key_bytes)?;
+                let value = V::bytes_decode(value_bytes)?;
+                Ok((key, value))
+            })
     }
 
     /// Returns an iterator over the keys of the map.
-    pub fn keys(&self) -> crate::iter::Keys<'_, K, V, BS, S>
+    pub fn keys(&self) -> impl Iterator<Item = Result<<K as BytesDecode<'_>>::DItem>> + '_
     where
         K: for<'a> BytesDecode<'a>,
         V: for<'a> BytesDecode<'a>,
         Heap<BS>: HeapOps<BS>,
     {
-        crate::iter::Keys::new(self)
+        self.iter().map(|res| res.map(|(k, _)| k))
     }
 
     /// Returns an iterator over the values of the map.
-    pub fn values(&self) -> crate::iter::Values<'_, K, V, BS, S>
+    pub fn values(&self) -> impl Iterator<Item = Result<<V as BytesDecode<'_>>::DItem>> + '_
     where
         K: for<'a> BytesDecode<'a>,
         V: for<'a> BytesDecode<'a>,
         Heap<BS>: HeapOps<BS>,
     {
-        crate::iter::Values::new(self)
+        self.iter().map(|res| res.map(|(_, v)| v))
     }
 
     /// Check if resizing is needed based on load factor
@@ -1944,16 +1966,15 @@ mod tests {
             assert_eq!(actual, expected);
         }
 
-        // Test ExactSizeIterator
-        assert_eq!(map.iter().len(), test_data.len());
-        assert_eq!(map.keys().len(), test_data.len());
-        assert_eq!(map.values().len(), test_data.len());
+        assert_eq!(map.iter().count(), test_data.len());
+        assert_eq!(map.keys().count(), test_data.len());
+        assert_eq!(map.values().count(), test_data.len());
 
         // Test empty map
         let empty_map: DiskHashMap<Native<u64>, Str, VecStore> = DiskHashMap::new();
         assert_eq!(empty_map.iter().count(), 0);
         assert_eq!(empty_map.keys().count(), 0);
         assert_eq!(empty_map.values().count(), 0);
-        assert_eq!(empty_map.iter().len(), 0);
+        assert_eq!(empty_map.iter().count(), 0);
     }
 }

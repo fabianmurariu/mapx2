@@ -47,7 +47,7 @@ pub mod entry;
 pub mod error;
 mod fixed_buffers;
 pub mod heap;
-pub mod iter;
+// pub mod iter;
 pub mod types;
 pub use byte_store::{ByteStore, MMapFile, VecStore};
 pub use disk_map::{
@@ -55,5 +55,4 @@ pub use disk_map::{
 };
 pub use error::{DiskMapError, Result};
 pub use heap::{Heap, HeapIdx, Slab};
-pub use iter::{Iter, Keys, Values};
 pub use types::{Bytes, BytesDecode, BytesEncode, Native, Str};
