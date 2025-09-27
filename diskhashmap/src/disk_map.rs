@@ -397,9 +397,11 @@ where
         }
 
         let entries_size_category = self.entries_size_category;
+        let current_state = Self::entries_state_mut(&mut self.heap, entries_size_category as u8);
+        let current_occupied_count = current_state.occupied_count;
         let DiskHashMap { heap, .. } = self;
 
-        let new_state = self.entries.grow(new_capacity)?;
+        let new_state = self.entries.grow(new_capacity, current_occupied_count)?;
         let state = Self::entries_state_mut(heap, entries_size_category as u8);
         *state = new_state;
 
