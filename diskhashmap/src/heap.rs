@@ -15,17 +15,17 @@ pub struct HeapIdx {
     pub offset: B54,
 }
 
-impl From<HeapIdx> for u64 {
-    fn from(index: HeapIdx) -> u64 {
-        u64::from_le_bytes(index.into_bytes())
-    }
-}
+// impl From<HeapIdx> for u64 {
+//     fn from(index: HeapIdx) -> u64 {
+//         u64::from_le_bytes(index.into_bytes())
+//     }
+// }
 
-impl From<u64> for HeapIdx {
-    fn from(value: u64) -> Self {
-        HeapIdx::from_bytes(value.to_le_bytes())
-    }
-}
+// impl From<u64> for HeapIdx {
+//     fn from(value: u64) -> Self {
+//         HeapIdx::from_bytes(value.to_le_bytes())
+//     }
+// }
 
 const SLAB_SIZES: [usize; 16] = [
     4,     // 4 bytes
@@ -498,11 +498,6 @@ mod tests {
 
         assert_eq!(index.category(), 2);
         assert_eq!(index.offset(), 2 ^ 165);
-
-        let as_u64: u64 = index.into();
-        let from_u64: HeapIdx = as_u64.into();
-
-        assert_eq!(index, from_u64);
     }
 
     #[test]

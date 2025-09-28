@@ -470,6 +470,7 @@ where
                 as usize
         });
 
+        entries_state.occupied_count += 1;
         // Update the entries state in the heap
         *Self::entries_state_mut(heap, self.entries_size_category as u8) = entries_state;
         self.size += 1;
