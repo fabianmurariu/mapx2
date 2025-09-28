@@ -185,7 +185,11 @@ mod double_array_entries_tests {
             }
             let (new, old) = entries.find_entry(*hash as usize, &state);
             let found = new.chain(old).find(|(_, e)| e.key_pos().offset() == *hash);
-            assert!(found.is_some(), "Should find entry for hash {}", hash);
+            assert!(
+                found.is_some(),
+                "Should find entry for hash {} in\n{entries:?}",
+                hash
+            );
         }
     }
 
@@ -194,6 +198,10 @@ mod double_array_entries_tests {
         let strat = prop::collection::vec((0u64..1000u64), 0..1024).prop_map(|mut vec| {
             vec.sort_unstable();
             vec.dedup();
+            // now shuffle them again
+            use rand::seq::SliceRandom;
+            let mut rng = rand::rng();
+            vec.shuffle(&mut rng);
             vec
         });
         proptest!(| (entries in strat) |{
@@ -203,7 +211,12 @@ mod double_array_entries_tests {
 
     #[test]
     fn i_can_have_entries_1() {
-        check_i_can_have_entries(&[1]);
+        check_i_can_have_entries(&[0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn i_can_have_entries_2() {
+        check_i_can_have_entries(&[0, 1, 2, 3, 4]);
     }
 }
 
@@ -386,7 +399,7 @@ impl<BS: ByteStore> DoubleArrayEntries<BS> {
             .into_iter()
             .filter_map(move |old_entries| {
                 let index_old = hash % old_entries.len();
-                if state.reindex_offset > 0 && index_old >= state.reindex_offset as usize {
+                if state.reindex_offset >= 0 && index_old >= state.reindex_offset as usize {
                     Some((old_entries, index_old))
                 } else {
                     None

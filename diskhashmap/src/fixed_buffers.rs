@@ -23,7 +23,7 @@ where
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FixedVec")
             .field("capacity", &self.capacity)
-            .field("store", &self.store)
+            .field("store", &self.deref())
             .finish()
     }
 }

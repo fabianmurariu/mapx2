@@ -5,7 +5,7 @@ use modular_bitfield::{Specifier, bitfield};
 
 use crate::HeapIdx;
 
-#[derive(Specifier, PartialEq, Debug, Clone, Copy)]
+#[derive(Specifier, PartialEq, Clone, Copy)]
 pub enum Status {
     Empty,
     Full,
@@ -13,14 +13,31 @@ pub enum Status {
     Moved,
 }
 
+impl std::fmt::Debug for Status {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Status::Empty => write!(f, "E"),
+            Status::Full => write!(f, "F"),
+            Status::Deleted => write!(f, "D"),
+            Status::Moved => write!(f, "M"),
+        }
+    }
+}
+
 #[bitfield(bits = 4)]
-#[derive(Clone, Copy, Zeroable, Pod, Debug, Specifier)]
+#[derive(Clone, Copy, Zeroable, Pod, Specifier)]
 #[repr(C)]
 pub struct PaddedStatus {
     #[bits = 2]
     status: Status,
     #[bits = 2]
     padding: B2,
+}
+
+impl std::fmt::Debug for PaddedStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self.status())
+    }
 }
 
 #[bitfield(bits = 128)]
