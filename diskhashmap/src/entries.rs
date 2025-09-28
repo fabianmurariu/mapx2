@@ -184,7 +184,10 @@ mod double_array_entries_tests {
                 capacity *= 2;
             }
             let (new, old) = entries.find_entry(*hash as usize, &state);
-            let found = new.chain(old).find(|(_, e)| e.key_pos().offset() == *hash);
+            let found = new
+                .filter(|(_, e)| !e.is_empty())
+                .chain(old.filter(|(_, e)| !e.is_empty()))
+                .find(|(_, e)| e.key_pos().offset() == *hash);
             assert!(
                 found.is_some(),
                 "Should find entry for hash {} in\n{entries:?}",
@@ -195,10 +198,9 @@ mod double_array_entries_tests {
 
     #[test]
     fn i_can_have_entries() {
-        let strat = prop::collection::vec((0u64..1000u64), 0..1024).prop_map(|mut vec| {
+        let strat = prop::collection::vec(0u64..1000u64, 0..1024).prop_map(|mut vec| {
             vec.sort_unstable();
             vec.dedup();
-            // now shuffle them again
             use rand::seq::SliceRandom;
             let mut rng = rand::rng();
             vec.shuffle(&mut rng);
