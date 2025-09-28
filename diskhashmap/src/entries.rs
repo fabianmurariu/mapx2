@@ -425,7 +425,7 @@ impl<BS: ByteStore> DoubleArrayEntries<BS> {
             .enumerate()
             .map(move |(pos, entry)| (pos + index_new, entry))
             .chain(self.new_entries.as_ref()[..index_new].iter().enumerate())
-            .map(|(pos, entry)| (SlotIdx::old(pos), entry));
+            .map(|(pos, entry)| (SlotIdx::new(pos), entry));
         (new_iter, old_iter)
     }
 }
