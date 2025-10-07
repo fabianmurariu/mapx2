@@ -141,7 +141,7 @@ impl<S: ByteStore> Slab<S> {
         result
     }
 
-    fn next_free_page(&mut self, size_category: u8, len: usize) -> PageEntry<S> {
+    fn next_free_page(&mut self, size_category: u8, len: usize) -> PageEntry<'_, S> {
         let pos_range = self.resolve_pos(self.count);
         let required_capacity = pos_range.end;
 
@@ -387,7 +387,7 @@ where
             .with_offset(offset)
     }
 
-    pub fn next_free_page(&mut self, size: usize) -> PageEntry<S> {
+    pub fn next_free_page(&mut self, size: usize) -> PageEntry<'_, S> {
         let category = self.find_size_category(size);
         let slab = self.get_or_create_slab(category);
         slab.next_free_page(

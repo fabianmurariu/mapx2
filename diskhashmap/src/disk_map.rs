@@ -94,28 +94,10 @@ where
 {
     entries: DoubleArrayEntries<BS>,
     heap: Heap<BS>,
-    capacity: usize,
     size: usize,
     hasher: S,
     entries_size_category: usize,
     _marker: PhantomData<(K, V)>,
-}
-
-impl<K, V, BS, S> std::fmt::Debug for DiskHashMap<K, V, BS, S>
-where
-    K: std::fmt::Debug,
-    V: std::fmt::Debug,
-    BS: ByteStore + std::fmt::Debug,
-    S: std::hash::BuildHasher,
-{
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("DiskHashMap")
-            .field("capacity", &self.capacity)
-            .field("size", &self.size)
-            .field("entries", &self.entries)
-            .field("heap", &self.heap)
-            .finish()
-    }
 }
 
 impl<K, V> Default for DiskHashMap<K, V, VecStore, FxBuildHasher> {
@@ -144,43 +126,31 @@ where
 
     /// Returns the current capacity of the map
     pub fn capacity(&self) -> usize {
-        self.capacity
+        self.entries.len()
     }
 
     /// Returns the load factor of the map (size / capacity)
     pub fn load_factor(&self) -> f64 {
-        if self.capacity == 0 {
+        if self.capacity() == 0 {
             return f64::INFINITY;
         }
-        self.size as f64 / self.capacity as f64
+        self.size as f64 / self.capacity() as f64
     }
-
-    // /// Returns the effective capacity for iteration purposes
-    // /// During resize, this includes both old and new arrays
-    // pub(crate) fn effective_capacity(&self) -> usize {
-    //     self.entries.effective_capacity()
-    // }
 
     /// Returns a reference to the entries storage (for internal use by iterators)
     pub(crate) fn entries(&self) -> &DoubleArrayEntries<BS> {
         &self.entries
     }
 
-    /// Returns a reference to the heap (for internal use by iterators)
-    pub(crate) fn heap(&self) -> &Heap<BS> {
-        &self.heap
-    }
-
     /// Returns an iterator over the key-value pairs of the map.
     pub fn iter<'a>(
         &'a self,
-    ) -> impl Iterator<Item = Result<(<K as BytesDecode<'a>>::DItem, <V as BytesDecode<'a>>::DItem)>> + '_
+    ) -> impl Iterator<Item = Result<(<K as BytesDecode<'a>>::DItem, <V as BytesDecode<'a>>::DItem)>> + 'a
     where
         K: for<'b> BytesDecode<'b>,
         V: for<'b> BytesDecode<'b>,
         Heap<BS>: HeapOps<BS>,
     {
-        // crate::iter::Iter::new(self)
         let EntriesState {
             reindex_offset,
             occupied_count,
@@ -225,7 +195,7 @@ where
 
     /// Check if resizing is needed based on load factor
     fn should_resize(&self) -> bool {
-        if self.capacity == 0 {
+        if self.capacity() == 0 {
             return true;
         }
         // Resize when load factor exceeds 40% for better performance.
@@ -316,14 +286,14 @@ where
                     .with_offset(0),
             )
             .expect("EntriesState must exist in heap");
-        bytemuck::from_bytes::<EntriesState>(es_bytes)
+        bytemuck::from_bytes::<EntriesState>(&es_bytes[0..size_of::<EntriesState>()])
     }
 
     fn entries_state_mut(heap: &mut Heap<BS>, esg: u8) -> &mut EntriesState {
         let es_bytes = heap
             .get_mut(HeapIdx::new().with_category(esg).with_offset(0))
             .expect("EntriesState must exist in heap");
-        bytemuck::from_bytes_mut::<EntriesState>(es_bytes)
+        bytemuck::from_bytes_mut::<EntriesState>(&mut es_bytes[0..size_of::<EntriesState>()])
     }
 
     fn insert_key_into_heap(
@@ -381,10 +351,10 @@ where
     Heap<BS>: HeapOps<BS>,
 {
     fn grow(&mut self) -> Result<()> {
-        let new_capacity = if self.capacity == 0 {
+        let new_capacity = if self.capacity() == 0 {
             16
         } else {
-            self.capacity * 2
+            self.capacity() * 2
         };
 
         // For single array implementation, fall back to complete rehashing
@@ -643,7 +613,6 @@ impl<K, V, S: BuildHasher + Default> DiskHashMap<K, V, VecStore, S> {
         Self {
             heap,
             entries: DoubleArrayEntries::new(entries),
-            capacity,
             size: 0,
             entries_size_category,
             hasher: S::default(),
@@ -676,7 +645,6 @@ where
         Ok(Self {
             heap,
             entries: DoubleArrayEntries::new(entries),
-            capacity,
             size: 0,
             entries_size_category,
             hasher: S::default(),
@@ -718,7 +686,6 @@ where
         Ok(Self {
             heap,
             entries: DoubleArrayEntries::new(entries),
-            capacity,
             size: 0,
             entries_size_category,
             hasher: S::default(),
@@ -752,7 +719,6 @@ where
             Ok(Self {
                 heap,
                 entries: DoubleArrayEntries::new(entries),
-                capacity,
                 size,
                 entries_size_category,
                 hasher: S::default(),
@@ -779,7 +745,6 @@ where
                 entries: DoubleArrayEntries::new_with_old(oldest_entries, latest_entries),
                 size,
                 entries_size_category,
-                capacity,
                 hasher: S::default(),
                 _marker: PhantomData,
             })

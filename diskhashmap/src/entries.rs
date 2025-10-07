@@ -50,10 +50,8 @@ mod slot_idx_test {
 mod double_array_entries_tests {
     use super::*;
     use crate::HeapIdx;
-    use crate::byte_store::{MMapFile, VecStore};
-    use crate::entry::{Entry, PaddedStatus, Status};
-    use std::collections::HashMap;
-    use tempfile::TempDir;
+    use crate::byte_store::VecStore;
+    use crate::entry::Entry;
 
     fn create_vec_store(capacity: usize) -> VecStore {
         let bytes_needed = capacity * std::mem::size_of::<Entry>();
@@ -63,23 +61,23 @@ mod double_array_entries_tests {
     }
 
     fn create_test_entry(k_pos: u64, v_pos: u64) -> Entry {
-        let k_pos = HeapIdx::new().with_category(0 as u8).with_offset(k_pos);
-        let v_pos = HeapIdx::new().with_category(0 as u8).with_offset(v_pos);
+        let k_pos = HeapIdx::new().with_category(0).with_offset(k_pos);
+        let v_pos = HeapIdx::new().with_category(0).with_offset(v_pos);
         Entry::occupied_at_pos(k_pos, v_pos)
     }
 
-    fn create_deleted_entry() -> Entry {
-        let mut entry = Entry::new();
-        // Create the entry then mark it as deleted
-        entry = entry.with_status(PaddedStatus::from_bytes([Status::Deleted as u8]));
-        entry
-    }
+    // fn create_deleted_entry() -> Entry {
+    //     let mut entry = Entry::new();
+    //     // Create the entry then mark it as deleted
+    //     entry = entry.with_status(PaddedStatus::from_bytes([Status::Deleted as u8]));
+    //     entry
+    // }
 
-    fn create_moved_entry() -> Entry {
-        let mut entry = Entry::new();
-        entry.mark_as_moved();
-        entry
-    }
+    // fn create_moved_entry() -> Entry {
+    //     let mut entry = Entry::new();
+    //     entry.mark_as_moved();
+    //     entry
+    // }
 
     #[test]
     fn test_new_double_array_entries_vec_store() {
@@ -261,7 +259,7 @@ impl<BS: ByteStore> DoubleArrayEntries<BS> {
 // State is stored externally by the disk_map
 // and is passed in for operations that need it
 #[repr(C)]
-#[derive(Debug, Pod, Zeroable, Clone, Copy)]
+#[derive(Debug, Pod, Zeroable, Clone, Copy, PartialEq)]
 pub(crate) struct EntriesState {
     pub reindex_offset: i64,
     pub reindex_batch: u64,
@@ -269,13 +267,21 @@ pub(crate) struct EntriesState {
 }
 
 impl<BS: ByteStore> DoubleArrayEntries<BS> {
-    fn new_with_capacity(store: BS, capacity: usize) -> Result<Self> {
-        let entries = FixedVec::new_with_capacity(store, capacity);
-        Ok(Self::new(entries))
-    }
+    // fn new_with_capacity(store: BS, capacity: usize) -> Result<Self> {
+    //     let entries = FixedVec::new_with_capacity(store, capacity);
+    //     Ok(Self::new(entries))
+    // }
 
     pub(crate) fn has_old_entries(&self) -> bool {
         self.old_entries.is_some()
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.new_entries.len()
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.new_entries.len() == 0 && self.old_entries.as_ref().map_or(true, |old| old.len() == 0)
     }
 
     pub(crate) fn iter(
@@ -312,8 +318,20 @@ impl<BS: ByteStore> DoubleArrayEntries<BS> {
         new_capacity: usize,
         current_occupied_count: u64,
     ) -> Result<EntriesState> {
+        // handle the first call to grow from 0
+        let init_empty = self.new_entries.is_empty();
         let new_entries = self.new_entries.new_empty(new_capacity);
         let old_entries = std::mem::replace(&mut self.new_entries, new_entries);
+        if init_empty {
+            // first grow, no need to reindex
+            old_entries.purge();
+            self.old_entries = None;
+            return Ok(EntriesState {
+                reindex_offset: -1,
+                reindex_batch: 4,
+                occupied_count: current_occupied_count,
+            });
+        }
         self.old_entries = Some(old_entries);
         Ok(EntriesState {
             reindex_offset: 0,
@@ -376,7 +394,7 @@ impl<BS: ByteStore> DoubleArrayEntries<BS> {
         }
     }
 
-    pub fn get_entry(&self, index: SlotIdx) -> Option<&Entry> {
+    pub(crate) fn get_entry(&self, index: SlotIdx) -> Option<&Entry> {
         if !index.is_old() {
             self.new_entries.as_ref().get(index.value())
         } else {
