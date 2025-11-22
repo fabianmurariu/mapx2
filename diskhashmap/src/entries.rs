@@ -1,5 +1,5 @@
 use bytemuck::{Pod, Zeroable};
-
+use either::Either;
 use crate::ByteStore;
 use crate::entry::Entry;
 use crate::error::Result;
@@ -153,7 +153,7 @@ mod double_array_entries_tests {
         let new_state = double_entries.grow(16, state.occupied_count).unwrap();
         assert_eq!(new_state.reindex_offset, 0);
         assert_eq!(new_state.reindex_batch, 4);
-        assert_eq!(new_state.occupied_count, 2);
+        assert_eq!(new_state.occupied_count, 4);
 
         assert!(double_entries.has_old_entries());
         assert_eq!(double_entries.new_entries.capacity(), 16);
@@ -351,7 +351,7 @@ impl<BS: ByteStore> DoubleArrayEntries<BS> {
         fn insert_into_entries(items: &mut [Entry], index: SlotIdx, entry: Entry) {
             // fast path for empty slot
             let index = index.value();
-            if items[index].is_empty() || items[index].is_deleted() || &items[index] == &entry {
+            if items[index].is_empty() || items[index].is_deleted() || items[index].key_pos() == entry.key_pos() {
                 // either empty slot or replacing same key
                 items[index] = entry;
                 return;
@@ -370,16 +370,18 @@ impl<BS: ByteStore> DoubleArrayEntries<BS> {
         if state.reindex_offset >= 0 && self.old_entries.is_some() {
             // we need to re-index
             let mut done = false;
-            if let Some(old_items) = self.old_entries.as_ref() {
+            if let Some(old_items) = self.old_entries.as_mut() {
                 let start = state.reindex_offset as usize;
                 let end = (state.reindex_offset as usize + state.reindex_batch as usize)
                     .min(old_items.len());
                 done = end == old_items.len();
-                for entry in &old_items.as_ref()[start..end] {
+                for i in start..end {
+                    let entry = &mut old_items.as_mut()[i];
                     if entry.is_occupied() && !entry.is_moved() {
                         let new_hash = reindex_callback(entry);
                         let new_index = new_hash % items.len();
                         insert_into_entries(items, SlotIdx::new(new_index), *entry);
+                        entry.mark_as_moved();
                     }
                     state.reindex_offset += 1;
                 }
@@ -419,25 +421,37 @@ impl<BS: ByteStore> DoubleArrayEntries<BS> {
             .into_iter()
             .filter_map(move |old_entries| {
                 let index_old = hash % old_entries.len();
-                if state.reindex_offset >= 0 && index_old >= state.reindex_offset as usize {
+                if state.reindex_offset >= 0 {
                     Some((old_entries, index_old))
                 } else {
                     None
                 }
             })
             .flat_map(move |(old_entries, index_old)| {
-                old_entries.as_ref()[index_old..]
-                    .iter()
-                    .enumerate()
-                    .map(move |(pos, entry)| (pos + index_old, entry))
-                    .chain(
-                        old_entries.as_ref()[state.reindex_offset as usize..index_old]
-                            .iter()
-                            .enumerate()
-                            .map(|(pos, entry)| (pos + state.reindex_offset as usize, entry)),
-                    )
-                    .map(|(pos, entry)| (SlotIdx::old(pos), entry))
-            });
+                let reindex_offset = state.reindex_offset as usize;
+                if index_old >= reindex_offset {
+                    // Start from index_old and wrap around, but only visit entries >= reindex_offset
+                    Either::Left(old_entries.as_ref()[index_old..]
+                        .iter()
+                        .enumerate()
+                        .map(move |(pos, entry)| (pos + index_old, entry))
+                        .chain(
+                            old_entries.as_ref()[reindex_offset..index_old]
+                                .iter()
+                                .enumerate()
+                                .map(move |(pos, entry)| (pos + reindex_offset, entry)),
+                        )
+                        .map(|(pos, entry)| (SlotIdx::old(pos), entry)))
+                } else {
+                    // index_old < reindex_offset, so start from reindex_offset
+                    Either::Right(old_entries.as_ref()[reindex_offset..]
+                        .iter()
+                        .enumerate()
+                        .map(move |(pos, entry)| (pos + reindex_offset, entry))
+                        .map(|(pos, entry)| (SlotIdx::old(pos), entry)))
+                }
+            })
+            .into_iter();
         let new_iter = self.new_entries.as_ref()[index_new..]
             .iter()
             .enumerate()

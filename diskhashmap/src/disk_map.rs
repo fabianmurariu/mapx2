@@ -145,7 +145,7 @@ where
     /// Returns an iterator over the key-value pairs of the map.
     pub fn iter<'a>(
         &'a self,
-    ) -> impl Iterator<Item = Result<(<K as BytesDecode<'a>>::DItem, <V as BytesDecode<'a>>::DItem)>> + 'a
+    ) -> impl Iterator<Item=Result<(<K as BytesDecode<'a>>::DItem, <V as BytesDecode<'a>>::DItem)>> + 'a
     where
         K: for<'b> BytesDecode<'b>,
         V: for<'b> BytesDecode<'b>,
@@ -174,7 +174,7 @@ where
     }
 
     /// Returns an iterator over the keys of the map.
-    pub fn keys(&self) -> impl Iterator<Item = Result<<K as BytesDecode<'_>>::DItem>> + '_
+    pub fn keys(&self) -> impl Iterator<Item=Result<<K as BytesDecode<'_>>::DItem>> + '_
     where
         K: for<'a> BytesDecode<'a>,
         V: for<'a> BytesDecode<'a>,
@@ -184,7 +184,7 @@ where
     }
 
     /// Returns an iterator over the values of the map.
-    pub fn values(&self) -> impl Iterator<Item = Result<<V as BytesDecode<'_>>::DItem>> + '_
+    pub fn values(&self) -> impl Iterator<Item=Result<<V as BytesDecode<'_>>::DItem>> + '_
     where
         K: for<'a> BytesDecode<'a>,
         V: for<'a> BytesDecode<'a>,
@@ -554,8 +554,8 @@ where
         key: &'a <K as BytesEncode<'a>>::EItem,
     ) -> Result<MapEntry<'a, K, V, BS, S>>
     where
-        for<'b> K: BytesEncode<'b>,
-        for<'b> V: BytesDecode<'b>,
+            for<'b> K: BytesEncode<'b>,
+            for<'b> V: BytesDecode<'b>,
     {
         let (key_len, key_bytes) = K::bytes_encode(key)?;
         Ok(self.entry_raw(key_len, key_bytes.as_ref()))
@@ -568,8 +568,8 @@ where
         key: Q,
     ) -> MapEntry<'_, K, V, BS, S>
     where
-        for<'a> K: BytesEncode<'a>,
-        for<'b> V: BytesDecode<'b>,
+            for<'a> K: BytesEncode<'a>,
+            for<'b> V: BytesDecode<'b>,
     {
         if self.should_resize() {
             let _ = self.grow();
@@ -704,7 +704,7 @@ where
                     .with_offset(0),
             )
             .expect("EntriesState must exist in heap");
-        let es = bytemuck::from_bytes::<EntriesState>(es_bytes);
+        let es = bytemuck::from_bytes::<EntriesState>(&es_bytes[0..size_of::<EntriesState>()]);
         let size = es.occupied_count as usize;
 
         // Try to find all entries files to detect if we were in the middle of a resize
@@ -726,7 +726,7 @@ where
             })
         } else {
             // sort by size then take 2, assert there are exactly 2 files
-            assert!(entries_files.len() == 2, "Expected exactly 2 entries files");
+            assert_eq!(entries_files.len(), 2, "Expected exactly 2 entries files");
             entries_files.sort_by_key(|path| {
                 let meta = std::fs::metadata(path)
                     .unwrap_or_else(|_| panic!("File {path:?} does not exist"));
@@ -1023,6 +1023,7 @@ mod tests {
     }
 
     fn check_prop(hm: StdHashMap<Vec<u8>, Vec<u8>>) {
+        println!("Length of input hashmap: {}", hm.len());
         let temp_dir = tempdir().unwrap();
         let mut map: DiskBytesHM = DiskHashMap::new_in(&temp_dir).unwrap();
 
@@ -1261,17 +1262,17 @@ mod tests {
         }
     }
 
-    #[test]
-    fn it_s_a_hash_disk_map() {
-        let small_hash_map_prop = proptest::collection::hash_map(
-            proptest::collection::vec(0u8..255, 1..32),
-            proptest::collection::vec(0u8..255, 1..32),
-            1..15,
-        );
 
-        proptest!(|(values in small_hash_map_prop)|{
-            check_prop(values);
-        });
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(20))]
+        #[test]
+        fn it_s_a_hash_disk_map(
+                small_hash_map_prop in proptest::collection::hash_map(
+                    proptest::collection::vec(0u8..255, 1..32),
+                    proptest::collection::vec(0u8..255, 1..32),
+                    100..10000,
+
+            )){ check_prop(small_hash_map_prop); }
     }
 
     #[test]

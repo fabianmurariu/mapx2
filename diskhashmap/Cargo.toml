@@ -21,6 +21,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 rkyv = ["dep:rkyv"]
 
 [dependencies]
+either = { workspace = true }
 rkyv = { workspace = true, optional = true }
 
 modular-bitfield.workspace = true

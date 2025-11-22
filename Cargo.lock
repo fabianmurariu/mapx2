@@ -279,6 +279,7 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "criterion",
+ "either",
  "memmap2",
  "modular-bitfield",
  "paste",
