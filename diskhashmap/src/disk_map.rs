@@ -357,12 +357,13 @@ where
             self.capacity() * 2
         };
 
-        // For single array implementation, fall back to complete rehashing
-        // For double array implementation, use incremental resizing
+        // Use incremental resizing with double array implementation
         if self.entries.has_old_entries() {
-            // Already in the middle of a resize, complete it
+            // Already in the middle of a resize - this should not happen since we
+            // double capacity and rehash 4 entries per insert, which should complete
+            // before triggering another resize
             panic!(
-                "we are doubling the number of keys and rehashing 4 keys every entry, can we actually get to this state?"
+                "Resize triggered while already resizing - should not be reachable"
             );
         }
 

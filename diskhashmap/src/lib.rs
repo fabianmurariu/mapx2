@@ -42,12 +42,10 @@
 pub mod byte_store;
 pub mod disk_map;
 pub mod entries;
-// pub mod entries_simplified;
 pub mod entry;
 pub mod error;
 mod fixed_buffers;
 pub mod heap;
-// pub mod iter;
 pub mod types;
 pub use byte_store::{ByteStore, MMapFile, VecStore};
 pub use disk_map::{
