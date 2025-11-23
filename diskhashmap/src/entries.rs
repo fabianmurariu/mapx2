@@ -348,49 +348,64 @@ impl<BS: ByteStore> DoubleArrayEntries<BS> {
         reindex_callback: impl Fn(&Entry) -> usize,
     ) {
         let items = self.new_entries.as_mut();
+
+        #[inline(always)]
         fn insert_into_entries(items: &mut [Entry], index: SlotIdx, entry: Entry) {
-            // fast path for empty slot
-            let index = index.value();
-            if items[index].is_empty() || items[index].is_deleted() || items[index].key_pos() == entry.key_pos() {
-                // either empty slot or replacing same key
-                items[index] = entry;
+            let len = items.len();
+            let mut pos = index.value();
+
+            // Fast path - check direct slot first
+            let slot = &mut items[pos];
+            if slot.is_empty() || slot.is_deleted() || slot.key_pos() == entry.key_pos() {
+                *slot = entry;
                 return;
             }
-            for pos in (index..items.len()).chain(0..index) {
-                let current = &items[pos];
-                if current.is_empty() || current.is_deleted() {
-                    // Found an empty or deleted slot, insert here
-                    items[pos] = entry;
+
+            // Linear probing with manual wrapping
+            for _ in 1..len {
+                pos = (pos + 1) % len;
+                let slot = &mut items[pos];
+                if slot.is_empty() || slot.is_deleted() {
+                    *slot = entry;
                     return;
                 }
-                // If the slot is occupied, continue probing
             }
+            unreachable!("Hash table full");
         }
+
         insert_into_entries(items, index, entry);
-        if state.reindex_offset >= 0 && self.old_entries.is_some() {
-            // we need to re-index
-            let mut done = false;
+
+        // Incremental rehashing - only if we're in the middle of a resize
+        if state.reindex_offset >= 0 {
             if let Some(old_items) = self.old_entries.as_mut() {
+                let old_slice = old_items.as_mut();
                 let start = state.reindex_offset as usize;
-                let end = (state.reindex_offset as usize + state.reindex_batch as usize)
-                    .min(old_items.len());
-                done = end == old_items.len();
+                let end = (start + state.reindex_batch as usize).min(old_slice.len());
+                let done = end == old_slice.len();
+
+                // Rehash a batch of entries
                 for i in start..end {
-                    let entry = &mut old_items.as_mut()[i];
-                    if entry.is_occupied() && !entry.is_moved() {
-                        let new_hash = reindex_callback(entry);
+                    let old_entry = &mut old_slice[i];
+                    if old_entry.is_occupied() && !old_entry.is_moved() {
+                        let new_hash = reindex_callback(old_entry);
                         let new_index = new_hash % items.len();
-                        insert_into_entries(items, SlotIdx::new(new_index), *entry);
-                        entry.mark_as_moved();
+                        insert_into_entries(items, SlotIdx::new(new_index), *old_entry);
+                        old_entry.mark_as_moved();
                     }
-                    state.reindex_offset += 1;
                 }
-            }
-            if done {
-                // finished reindexing
-                state.reindex_offset = -1;
-                if let Some(old_entries) = self.old_entries.take() {
-                    old_entries.purge();
+
+                // Update offset once after the batch
+                state.reindex_offset = if done {
+                    -1
+                } else {
+                    state.reindex_offset + (end - start) as i64
+                };
+
+                // Cleanup old entries when done
+                if done {
+                    if let Some(old_entries) = self.old_entries.take() {
+                        old_entries.purge();
+                    }
                 }
             }
         }

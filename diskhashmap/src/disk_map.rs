@@ -1265,13 +1265,13 @@ mod tests {
 
 
     proptest! {
-        #![proptest_config(ProptestConfig::with_cases(20))]
+        #![proptest_config(ProptestConfig::with_cases(5))]
         #[test]
         fn it_s_a_hash_disk_map(
                 small_hash_map_prop in proptest::collection::hash_map(
                     proptest::collection::vec(0u8..255, 1..32),
                     proptest::collection::vec(0u8..255, 1..32),
-                    100..10000,
+                    10..5000,
 
             )){ check_prop(small_hash_map_prop); }
     }

@@ -237,7 +237,6 @@ impl<'a, S: ByteStore> PageEntry<'a, S> {
     }
 }
 
-#[allow(clippy::needless_lifetimes)]
 impl<'a, S: ByteStore> PageEntry<'a, S> {
     pub(crate) fn write_with_len(&mut self, len: usize, buf: &[u8]) -> io::Result<()> {
         let page = self.page_mut();
