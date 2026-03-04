@@ -198,8 +198,9 @@ where
         if self.capacity() == 0 {
             return true;
         }
-        // Resize when load factor exceeds 40% for better performance.
-        self.load_factor() > 0.4
+        // Resize when load factor exceeds 50% to reduce resize frequency.
+        // Trade-off: slightly longer probe distances at peak, but fewer resize cycles.
+        self.load_factor() > 0.5
     }
 
     /// Find the slot index for a key
