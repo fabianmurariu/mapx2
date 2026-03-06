@@ -87,6 +87,7 @@ where
 /// allowing for flexible storage options (in-memory with VecStore or persistent with MMapFile).
 /// The `ByteStore` is not used directly; instead we rely on `Buffers`
 /// which is technically a `Vec<Box<[u8]>>` but backed by a `ByteStore` trait.
+#[derive(Debug)]
 pub struct DiskHashMap<K, V, BS, S = FxBuildHasher>
 where
     BS: ByteStore,
@@ -145,7 +146,7 @@ where
     /// Returns an iterator over the key-value pairs of the map.
     pub fn iter<'a>(
         &'a self,
-    ) -> impl Iterator<Item=Result<(<K as BytesDecode<'a>>::DItem, <V as BytesDecode<'a>>::DItem)>> + 'a
+    ) -> impl Iterator<Item = Result<(<K as BytesDecode<'a>>::DItem, <V as BytesDecode<'a>>::DItem)>> + 'a
     where
         K: for<'b> BytesDecode<'b>,
         V: for<'b> BytesDecode<'b>,
@@ -174,7 +175,7 @@ where
     }
 
     /// Returns an iterator over the keys of the map.
-    pub fn keys(&self) -> impl Iterator<Item=Result<<K as BytesDecode<'_>>::DItem>> + '_
+    pub fn keys(&self) -> impl Iterator<Item = Result<<K as BytesDecode<'_>>::DItem>> + '_
     where
         K: for<'a> BytesDecode<'a>,
         V: for<'a> BytesDecode<'a>,
@@ -184,7 +185,7 @@ where
     }
 
     /// Returns an iterator over the values of the map.
-    pub fn values(&self) -> impl Iterator<Item=Result<<V as BytesDecode<'_>>::DItem>> + '_
+    pub fn values(&self) -> impl Iterator<Item = Result<<V as BytesDecode<'_>>::DItem>> + '_
     where
         K: for<'a> BytesDecode<'a>,
         V: for<'a> BytesDecode<'a>,
@@ -363,9 +364,7 @@ where
             // Already in the middle of a resize - this should not happen since we
             // double capacity and rehash 4 entries per insert, which should complete
             // before triggering another resize
-            panic!(
-                "Resize triggered while already resizing - should not be reachable"
-            );
+            panic!("Resize triggered while already resizing - should not be reachable");
         }
 
         let entries_size_category = self.entries_size_category;
@@ -556,8 +555,8 @@ where
         key: &'a <K as BytesEncode<'a>>::EItem,
     ) -> Result<MapEntry<'a, K, V, BS, S>>
     where
-            for<'b> K: BytesEncode<'b>,
-            for<'b> V: BytesDecode<'b>,
+        for<'b> K: BytesEncode<'b>,
+        for<'b> V: BytesDecode<'b>,
     {
         let (key_len, key_bytes) = K::bytes_encode(key)?;
         Ok(self.entry_raw(key_len, key_bytes.as_ref()))
@@ -570,8 +569,8 @@ where
         key: Q,
     ) -> MapEntry<'_, K, V, BS, S>
     where
-            for<'a> K: BytesEncode<'a>,
-            for<'b> V: BytesDecode<'b>,
+        for<'a> K: BytesEncode<'a>,
+        for<'b> V: BytesDecode<'b>,
     {
         if self.should_resize() {
             let _ = self.grow();
@@ -1263,7 +1262,6 @@ mod tests {
             );
         }
     }
-
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(5))]

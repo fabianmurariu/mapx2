@@ -112,6 +112,7 @@ impl ByteStore for Box<[u8]> {
     fn purge(self) {}
 }
 
+#[derive(Debug)]
 pub struct MMapFile {
     mmap: MmapMut,
     file: File,
