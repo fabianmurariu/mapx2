@@ -98,6 +98,8 @@ use std::sync::OnceLock;
 pub mod iter;
 pub mod refs;
 
+pub mod write_map;
+
 use crossbeam_utils::CachePadded;
 use diskhashmap::{
     ByteStore, DiskHashMap, Heap, MMapFile, Result,
@@ -160,9 +162,12 @@ where
         slots_per_slab: usize,
         max_size: Option<usize>,
     ) -> io::Result<Self> {
-        Self::with_hasher_and_shards_in(dir.as_ref(), FxBuildHasher, default_shard_amount(), |path| {
-            DiskHashMap::with_capacity(path, num_entries, slots_per_slab, max_size)
-        })
+        Self::with_hasher_and_shards_in(
+            dir.as_ref(),
+            FxBuildHasher,
+            default_shard_amount(),
+            |path| DiskHashMap::with_capacity(path, num_entries, slots_per_slab, max_size),
+        )
     }
 }
 
@@ -350,11 +355,50 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use diskhashmap::Native;
     use diskhashmap::{MMapFile, types::Str};
     use rustc_hash::FxBuildHasher;
     use std::sync::Arc;
     use std::thread;
     use tempfile::TempDir;
+
+    #[test]
+    fn test_insert_with_load() -> Result<()> {
+        let tempdir = tempfile::tempdir().expect("Failed to create temp dir");
+        {
+            let hm: DiskDashMap<Native<u64>, Native<u64>, MMapFile, FxBuildHasher> =
+                DiskDashMap::new_in(tempdir.path()).expect("Failed to create DiskHashMap");
+
+            hm.insert(&0, &1).expect("Failed to insert key-value pair");
+            hm.insert(&1, &2).expect("Failed to insert key-value pair");
+            let value = hm
+                .get(&0)
+                .expect("Failed to get value for key 42")
+                .expect("Key 42 not found");
+            assert_eq!(value.value()?, 1);
+        }
+
+        // Load the map again to verify persistence
+        {
+            let hm: DiskDashMap<Native<u64>, Native<u64>, MMapFile, FxBuildHasher> =
+                DiskDashMap::load_from(tempdir.path()).expect("Failed to load DiskHashMap");
+
+            hm.insert(&0, &2).expect("Failed to insert key-value pair");
+
+            let value = hm
+                .get(&0)
+                .expect("Failed to get value for key 42")
+                .expect("Key 42 not found");
+            assert_eq!(value.value()?, 2);
+
+            let value = hm
+                .get(&1)
+                .expect("Failed to get value for key 1")
+                .expect("Key 1 not found");
+            assert_eq!(value.value()?, 2);
+        }
+        Ok(())
+    }
 
     #[test]
     fn test_basic_operations() -> Result<()> {

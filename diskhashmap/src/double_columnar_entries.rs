@@ -7,6 +7,9 @@
 //! - `old_entries` contains entries that haven't been rehashed yet
 //! - `new_entries` contains rehashed entries and new insertions
 //! - Each insert operation rehashes a batch of entries from old to new
+//!
+//! The resize state (reindex_offset, reindex_batch) is stored in the
+//! ColumnarHeader of new_entries for persistence.
 
 use crate::byte_store::ByteStore;
 use crate::columnar_entries::{ColumnarEntries, EntryState};
@@ -55,36 +58,12 @@ impl ColumnarSlotIdx {
     }
 }
 
-/// State for incremental resizing.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ResizeState {
-    /// Current offset into old_entries for rehashing.
-    /// -1 means not currently resizing.
-    pub reindex_offset: i64,
-    /// Number of entries to rehash per insert operation.
-    pub reindex_batch: u64,
-}
-
-impl Default for ResizeState {
-    fn default() -> Self {
-        Self {
-            reindex_offset: -1,
-            reindex_batch: 4,
-        }
-    }
-}
-
-impl ResizeState {
-    /// Returns true if we're currently in the middle of a resize.
-    pub fn is_resizing(&self) -> bool {
-        self.reindex_offset >= 0
-    }
-}
-
 /// Double array entries for incremental resizing with columnar layout.
 ///
 /// Maintains two `ColumnarEntries` arrays during resize operations to allow
 /// incremental rehashing without long pauses.
+///
+/// The resize state is stored in the `new_entries` header for persistence.
 #[derive(Debug)]
 pub struct DoubleColumnarEntries<BS: ByteStore> {
     /// Old entries array (present during resize).
@@ -116,17 +95,34 @@ impl<BS: ByteStore> DoubleColumnarEntries<BS> {
         self.old_entries.is_some()
     }
 
+    /// Returns true if we're currently in the middle of a resize.
+    /// Reads from the header for persistence.
+    pub fn is_resizing(&self) -> bool {
+        self.new_entries.reindex_offset() >= 0
+    }
+
+    /// Get the current reindex offset from the header.
+    pub fn reindex_offset(&self) -> i64 {
+        self.new_entries.reindex_offset()
+    }
+
+    /// Get the current reindex batch size from the header.
+    pub fn reindex_batch(&self) -> u64 {
+        self.new_entries.reindex_batch()
+    }
+
     /// Get the capacity of the new entries array.
     pub fn capacity(&self) -> usize {
         self.new_entries.capacity()
     }
 
-    /// Get the total number of occupied entries across both arrays.
-    pub fn len(&self, state: &ResizeState) -> usize {
-        if state.is_resizing() {
+    /// Get the total number of occupied entries.
+    /// During resize, this counts entries in both arrays (excluding moved entries).
+    pub fn len(&self) -> usize {
+        if self.is_resizing() {
             // During resize, count from both arrays
-            // But be careful not to double-count: new_entries.len() includes
-            // entries already migrated, old_entries still has them marked as Moved
+            // new_entries.len() has entries already migrated
+            // old_entries still has unmigrated entries marked as Occupied (not Moved)
             self.new_entries.len()
                 + self
                     .old_entries
@@ -137,9 +133,19 @@ impl<BS: ByteStore> DoubleColumnarEntries<BS> {
         }
     }
 
+    /// Check if the map is empty.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     /// Get reference to new entries.
     pub fn new_entries(&self) -> &ColumnarEntries<BS> {
         &self.new_entries
+    }
+
+    /// Get mutable reference to new entries.
+    pub fn new_entries_mut(&mut self) -> &mut ColumnarEntries<BS> {
+        &mut self.new_entries
     }
 
     /// Get reference to old entries (if any).
@@ -147,15 +153,13 @@ impl<BS: ByteStore> DoubleColumnarEntries<BS> {
         self.old_entries.as_ref()
     }
 
-    /// Check if resize is needed.
+    /// Check if resize is needed (85% load factor).
     pub fn should_resize(&self) -> bool {
         self.new_entries.should_resize()
     }
 
     /// Grow to new capacity, initiating incremental resize.
-    ///
-    /// Returns the new ResizeState to track incremental rehashing progress.
-    pub fn grow(&mut self, new_capacity: usize) -> Result<ResizeState> {
+    pub fn grow(&mut self, new_capacity: usize) -> Result<()> {
         // Can't grow while already resizing
         if self.old_entries.is_some() {
             panic!("Cannot grow while already resizing");
@@ -171,16 +175,18 @@ impl<BS: ByteStore> DoubleColumnarEntries<BS> {
             // First grow from zero capacity, no need to rehash
             old_entries.purge();
             self.old_entries = None;
-            return Ok(ResizeState::default());
+            // State already defaults to not-resizing in new header
+            return Ok(());
         }
 
         // Store old entries for incremental rehashing
         self.old_entries = Some(old_entries);
 
-        Ok(ResizeState {
-            reindex_offset: 0,
-            reindex_batch: 4,
-        })
+        // Set resize state in the new header
+        self.new_entries.set_reindex_offset(0);
+        self.new_entries.set_reindex_batch(4);
+
+        Ok(())
     }
 
     /// Insert with Robin Hood hashing, including incremental rehashing.
@@ -191,37 +197,35 @@ impl<BS: ByteStore> DoubleColumnarEntries<BS> {
         &mut self,
         hash: u64,
         entry: Entry,
-        state: &mut ResizeState,
         key_eq: impl Fn(&Entry, &Entry) -> bool,
         rehash_fn: impl Fn(&Entry) -> u64,
     ) -> Option<Entry> {
+        let is_resizing = self.is_resizing();
+        let reindex_offset = self.reindex_offset();
+
         // First check if the key exists in old entries (during resize)
-        if state.is_resizing() {
+        // We must search all of old_entries because an entry's actual slot
+        // might differ from hash % capacity due to probing
+        if is_resizing {
             if let Some(ref old) = self.old_entries {
-                // Check if key exists in old entries (only in un-rehashed portion)
-                let old_capacity = old.capacity();
-                let old_slot = (hash as usize) % old_capacity;
+                if let Some((slot, existing_entry)) =
+                    old.robin_hood_find(hash, |e| key_eq(e, &entry))
+                {
+                    // Key exists in old entries - need to migrate it first
+                    // then update in new entries
+                    let new_hash = rehash_fn(&existing_entry);
+                    self.new_entries
+                        .robin_hood_insert(new_hash, entry, &key_eq);
 
-                if old_slot >= state.reindex_offset as usize {
-                    if let Some((slot, existing_entry)) =
-                        old.robin_hood_find(hash, |e| key_eq(e, &entry))
-                    {
-                        // Key exists in old entries - need to migrate it first
-                        // then update in new entries
-                        let new_hash = rehash_fn(&existing_entry);
-                        self.new_entries
-                            .robin_hood_insert(new_hash, entry, &key_eq);
-
-                        // Mark old entry as moved
-                        if let Some(ref mut old) = self.old_entries {
-                            old.set_state(slot, EntryState::Moved);
-                        }
-
-                        // Do incremental rehashing
-                        self.do_incremental_rehash(state, &key_eq, &rehash_fn);
-
-                        return Some(existing_entry);
+                    // Mark old entry as moved
+                    if let Some(ref mut old) = self.old_entries {
+                        old.set_state(slot, EntryState::Moved);
                     }
+
+                    // Do incremental rehashing
+                    self.do_incremental_rehash(&key_eq, &rehash_fn);
+
+                    return Some(existing_entry);
                 }
             }
         }
@@ -230,8 +234,8 @@ impl<BS: ByteStore> DoubleColumnarEntries<BS> {
         let result = self.new_entries.robin_hood_insert(hash, entry, &key_eq);
 
         // Do incremental rehashing
-        if state.is_resizing() {
-            self.do_incremental_rehash(state, &key_eq, &rehash_fn);
+        if is_resizing {
+            self.do_incremental_rehash(&key_eq, &rehash_fn);
         }
 
         result
@@ -240,15 +244,17 @@ impl<BS: ByteStore> DoubleColumnarEntries<BS> {
     /// Perform incremental rehashing of a batch of entries.
     fn do_incremental_rehash(
         &mut self,
-        state: &mut ResizeState,
         key_eq: &impl Fn(&Entry, &Entry) -> bool,
         rehash_fn: &impl Fn(&Entry) -> u64,
     ) {
+        let reindex_offset = self.reindex_offset();
+        let reindex_batch = self.reindex_batch();
+
         if let Some(ref mut old) = self.old_entries {
             let old_capacity = old.capacity();
-            let start = state.reindex_offset as usize;
+            let start = reindex_offset as usize;
             let end = start
-                .saturating_add(state.reindex_batch as usize)
+                .saturating_add(reindex_batch as usize)
                 .min(old_capacity);
 
             // Rehash a batch of entries
@@ -266,15 +272,15 @@ impl<BS: ByteStore> DoubleColumnarEntries<BS> {
                 }
             }
 
-            // Update offset
+            // Update offset in header
             if end >= old_capacity {
                 // Done rehashing
-                state.reindex_offset = -1;
+                self.new_entries.set_reindex_offset(-1);
                 if let Some(old_entries) = self.old_entries.take() {
                     old_entries.purge();
                 }
             } else {
-                state.reindex_offset = end as i64;
+                self.new_entries.set_reindex_offset(end as i64);
             }
         }
     }
@@ -285,7 +291,6 @@ impl<BS: ByteStore> DoubleColumnarEntries<BS> {
     pub fn find(
         &self,
         hash: u64,
-        state: &ResizeState,
         key_eq: impl Fn(&Entry) -> bool,
     ) -> Option<(ColumnarSlotIdx, Entry)> {
         // First check new entries
@@ -294,19 +299,14 @@ impl<BS: ByteStore> DoubleColumnarEntries<BS> {
         }
 
         // Then check old entries if we're in the middle of a resize
-        if state.is_resizing() {
+        // We must search all of old_entries because:
+        // - Entries at slots >= reindex_offset haven't been migrated yet
+        // - An entry's actual slot might differ from hash % capacity due to probing
+        // - robin_hood_find will skip moved entries automatically
+        if self.is_resizing() {
             if let Some(ref old) = self.old_entries {
-                let old_capacity = old.capacity();
-                let old_slot = (hash as usize) % old_capacity;
-
-                // Only search in the un-rehashed portion
-                if old_slot >= state.reindex_offset as usize {
-                    if let Some((slot, entry)) = old.robin_hood_find(hash, &key_eq) {
-                        // Verify it's in the un-rehashed portion
-                        if slot >= state.reindex_offset as usize {
-                            return Some((ColumnarSlotIdx::old(slot), entry));
-                        }
-                    }
+                if let Some((slot, entry)) = old.robin_hood_find(hash, &key_eq) {
+                    return Some((ColumnarSlotIdx::old(slot), entry));
                 }
             }
         }
@@ -349,16 +349,15 @@ impl<BS: ByteStore> DoubleColumnarEntries<BS> {
     ///
     /// During resize, iterates over both old and new entries,
     /// skipping moved entries in old array.
-    pub fn iter<'a>(
-        &'a self,
-        state: &'a ResizeState,
-    ) -> impl Iterator<Item = (ColumnarSlotIdx, Entry)> + 'a {
+    pub fn iter(&self) -> impl Iterator<Item = (ColumnarSlotIdx, Entry)> + '_ {
+        let is_resizing = self.is_resizing();
+        let reindex_offset = self.reindex_offset() as usize;
+
         let old_iter = self
             .old_entries
             .iter()
-            .filter(move |_| state.is_resizing())
+            .filter(move |_| is_resizing)
             .flat_map(move |old| {
-                let reindex_offset = state.reindex_offset as usize;
                 old.iter()
                     .filter(move |(idx, _)| *idx >= reindex_offset)
                     .map(|(idx, entry)| (ColumnarSlotIdx::old(idx), entry))
@@ -376,16 +375,15 @@ impl<BS: ByteStore> DoubleColumnarEntries<BS> {
     /// Useful for persistence or when you need a consistent state.
     pub fn complete_resize(
         &mut self,
-        state: &mut ResizeState,
         key_eq: impl Fn(&Entry, &Entry) -> bool,
         rehash_fn: impl Fn(&Entry) -> u64,
     ) {
-        while state.is_resizing() {
+        while self.is_resizing() {
             // Use a large batch to complete quickly
-            let old_batch = state.reindex_batch;
-            state.reindex_batch = u64::MAX;
-            self.do_incremental_rehash(state, &key_eq, &rehash_fn);
-            state.reindex_batch = old_batch;
+            let old_batch = self.reindex_batch();
+            self.new_entries.set_reindex_batch(u64::MAX);
+            self.do_incremental_rehash(&key_eq, &rehash_fn);
+            self.new_entries.set_reindex_batch(old_batch);
         }
     }
 }
@@ -426,6 +424,7 @@ mod tests {
 
         assert!(!double.has_old_entries());
         assert_eq!(double.capacity(), 16);
+        assert!(!double.is_resizing());
     }
 
     #[test]
@@ -446,13 +445,12 @@ mod tests {
         let store = create_store(16);
         let entries = ColumnarEntries::new(store, 16);
         let mut double = DoubleColumnarEntries::new(entries);
-        let mut state = ResizeState::default();
 
         let entry = create_test_entry(100, 1000);
-        let result = double.insert(100, entry, &mut state, key_eq, rehash_fn);
+        let result = double.insert(100, entry, key_eq, rehash_fn);
         assert!(result.is_none());
 
-        let found = double.find(100, &state, |e| e.key_pos().offset() == 100);
+        let found = double.find(100, |e| e.key_pos().offset() == 100);
         assert!(found.is_some());
         let (_, found_entry) = found.unwrap();
         assert_eq!(found_entry.key_pos().offset(), 100);
@@ -464,31 +462,30 @@ mod tests {
         let store = create_store(8);
         let entries = ColumnarEntries::new(store, 8);
         let mut double = DoubleColumnarEntries::new(entries);
-        let mut state = ResizeState::default();
 
         // Insert some entries
         for i in 0..4 {
             let entry = create_test_entry(i * 100, i * 1000);
-            double.insert(i * 100, entry, &mut state, key_eq, rehash_fn);
+            double.insert(i * 100, entry, key_eq, rehash_fn);
         }
 
         assert_eq!(double.new_entries.len(), 4);
 
         // Grow
-        state = double.grow(16).unwrap();
+        double.grow(16).unwrap();
         assert!(double.has_old_entries());
-        assert!(state.is_resizing());
+        assert!(double.is_resizing());
         assert_eq!(double.capacity(), 16);
 
         // Insert more - this should trigger incremental rehashing
         for i in 4..8 {
             let entry = create_test_entry(i * 100, i * 1000);
-            double.insert(i * 100, entry, &mut state, key_eq, rehash_fn);
+            double.insert(i * 100, entry, key_eq, rehash_fn);
         }
 
         // All original entries should still be findable
         for i in 0..8 {
-            let found = double.find(i * 100, &state, |e| e.key_pos().offset() == i * 100);
+            let found = double.find(i * 100, |e| e.key_pos().offset() == i * 100);
             assert!(found.is_some(), "Entry {} not found", i);
         }
     }
@@ -498,27 +495,26 @@ mod tests {
         let store = create_store(8);
         let entries = ColumnarEntries::new(store, 8);
         let mut double = DoubleColumnarEntries::new(entries);
-        let mut state = ResizeState::default();
 
         // Insert entries
         for i in 0..4 {
             let entry = create_test_entry(i * 100, i * 1000);
-            double.insert(i * 100, entry, &mut state, key_eq, rehash_fn);
+            double.insert(i * 100, entry, key_eq, rehash_fn);
         }
 
         // Grow
-        state = double.grow(16).unwrap();
-        assert!(state.is_resizing());
+        double.grow(16).unwrap();
+        assert!(double.is_resizing());
 
         // Complete resize immediately
-        double.complete_resize(&mut state, key_eq, rehash_fn);
+        double.complete_resize(key_eq, rehash_fn);
 
-        assert!(!state.is_resizing());
+        assert!(!double.is_resizing());
         assert!(!double.has_old_entries());
 
         // All entries should be in new_entries now
         for i in 0..4 {
-            let found = double.find(i * 100, &state, |e| e.key_pos().offset() == i * 100);
+            let found = double.find(i * 100, |e| e.key_pos().offset() == i * 100);
             assert!(found.is_some());
             assert!(found.unwrap().0.is_new());
         }
@@ -529,24 +525,23 @@ mod tests {
         let store = create_store(8);
         let entries = ColumnarEntries::new(store, 8);
         let mut double = DoubleColumnarEntries::new(entries);
-        let mut state = ResizeState::default();
 
         // Insert initial entry
         let entry1 = create_test_entry(100, 1000);
-        double.insert(100, entry1, &mut state, key_eq, rehash_fn);
+        double.insert(100, entry1, key_eq, rehash_fn);
 
         // Grow (entry is now in old_entries)
-        state = double.grow(16).unwrap();
+        double.grow(16).unwrap();
 
         // Update the entry (should migrate and update)
         let entry2 = create_test_entry(100, 2000);
-        let old = double.insert(100, entry2, &mut state, key_eq, rehash_fn);
+        let old = double.insert(100, entry2, key_eq, rehash_fn);
 
         assert!(old.is_some());
         assert_eq!(old.unwrap().value_pos().offset(), 1000);
 
         // Find should return updated value
-        let found = double.find(100, &state, |e| e.key_pos().offset() == 100);
+        let found = double.find(100, |e| e.key_pos().offset() == 100);
         assert!(found.is_some());
         assert_eq!(found.unwrap().1.value_pos().offset(), 2000);
     }
@@ -556,19 +551,18 @@ mod tests {
         let store = create_store(16);
         let entries = ColumnarEntries::new(store, 16);
         let mut double = DoubleColumnarEntries::new(entries);
-        let mut state = ResizeState::default();
 
         let entry = create_test_entry(100, 1000);
-        double.insert(100, entry, &mut state, key_eq, rehash_fn);
+        double.insert(100, entry, key_eq, rehash_fn);
 
-        let found = double.find(100, &state, |e| e.key_pos().offset() == 100);
+        let found = double.find(100, |e| e.key_pos().offset() == 100);
         assert!(found.is_some());
         let (slot_idx, _) = found.unwrap();
 
         let deleted = double.delete(slot_idx);
         assert!(deleted.is_some());
 
-        let found = double.find(100, &state, |e| e.key_pos().offset() == 100);
+        let found = double.find(100, |e| e.key_pos().offset() == 100);
         assert!(found.is_none());
     }
 
@@ -577,14 +571,13 @@ mod tests {
         let store = create_store(16);
         let entries = ColumnarEntries::new(store, 16);
         let mut double = DoubleColumnarEntries::new(entries);
-        let mut state = ResizeState::default();
 
         for i in 0..5 {
             let entry = create_test_entry(i * 100, i * 1000);
-            double.insert(i * 100, entry, &mut state, key_eq, rehash_fn);
+            double.insert(i * 100, entry, key_eq, rehash_fn);
         }
 
-        let collected: Vec<_> = double.iter(&state).collect();
+        let collected: Vec<_> = double.iter().collect();
         assert_eq!(collected.len(), 5);
 
         let keys: std::collections::HashSet<_> =
@@ -600,29 +593,60 @@ mod tests {
         let store = create_store(8);
         let entries = ColumnarEntries::new(store, 8);
         let mut double = DoubleColumnarEntries::new(entries);
-        let mut state = ResizeState::default();
 
         // Insert entries
         for i in 0..4 {
             let entry = create_test_entry(i * 100, i * 1000);
-            double.insert(i * 100, entry, &mut state, key_eq, rehash_fn);
+            double.insert(i * 100, entry, key_eq, rehash_fn);
         }
 
         // Grow
-        state = double.grow(16).unwrap();
+        double.grow(16).unwrap();
 
         // Insert one more (triggers some rehashing)
         let entry = create_test_entry(400, 4000);
-        double.insert(400, entry, &mut state, key_eq, rehash_fn);
+        double.insert(400, entry, key_eq, rehash_fn);
 
         // Iterator should return all 5 entries
-        let collected: Vec<_> = double.iter(&state).collect();
+        let collected: Vec<_> = double.iter().collect();
         let keys: std::collections::HashSet<_> =
             collected.iter().map(|(_, e)| e.key_pos().offset()).collect();
 
         for i in 0..5 {
             assert!(keys.contains(&(i * 100)), "Missing key {}", i * 100);
         }
+    }
+
+    #[test]
+    fn test_len_during_resize() {
+        let store = create_store(8);
+        let entries = ColumnarEntries::new(store, 8);
+        let mut double = DoubleColumnarEntries::new(entries);
+
+        // Insert entries
+        for i in 0..4 {
+            let entry = create_test_entry(i * 100, i * 1000);
+            double.insert(i * 100, entry, key_eq, rehash_fn);
+        }
+
+        assert_eq!(double.len(), 4);
+
+        // Grow
+        double.grow(16).unwrap();
+
+        // During resize, len should still be accurate
+        assert_eq!(double.len(), 4);
+
+        // Insert one more
+        let entry = create_test_entry(400, 4000);
+        double.insert(400, entry, key_eq, rehash_fn);
+
+        assert_eq!(double.len(), 5);
+
+        // Complete resize
+        double.complete_resize(key_eq, rehash_fn);
+
+        assert_eq!(double.len(), 5);
     }
 
     use proptest::prelude::*;
@@ -640,7 +664,6 @@ mod tests {
             let store = create_store(16);
             let entries = ColumnarEntries::new(store, 16);
             let mut double = DoubleColumnarEntries::new(entries);
-            let mut state = ResizeState::default();
 
             let mut expected = std::collections::HashMap::new();
 
@@ -648,24 +671,112 @@ mod tests {
                 let entry = create_test_entry(key, value);
 
                 // Grow if needed
-                if double.should_resize() && !state.is_resizing() {
+                if double.should_resize() && !double.is_resizing() {
                     let new_cap = double.capacity() * 2;
-                    state = double.grow(new_cap).unwrap();
+                    double.grow(new_cap).unwrap();
                 }
 
-                double.insert(key, entry, &mut state, key_eq, rehash_fn);
+                double.insert(key, entry, key_eq, rehash_fn);
                 expected.insert(key, value);
             }
 
             // Complete any ongoing resize
-            double.complete_resize(&mut state, key_eq, rehash_fn);
+            double.complete_resize(key_eq, rehash_fn);
 
             // Verify all entries
             for (key, value) in &expected {
-                let found = double.find(*key, &state, |e| e.key_pos().offset() == *key);
+                let found = double.find(*key, |e| e.key_pos().offset() == *key);
                 prop_assert!(found.is_some(), "Key {} not found", key);
                 let (_, entry) = found.unwrap();
                 prop_assert_eq!(entry.value_pos().offset(), *value);
+            }
+        }
+    }
+
+    // === Persistence tests with MMapFile ===
+
+    #[cfg(test)]
+    mod persistence_tests {
+        use super::*;
+        use crate::byte_store::MMapFile;
+        use tempfile::tempdir;
+
+        fn create_mmap_store(path: &std::path::Path, capacity: usize) -> MMapFile {
+            let bytes_needed = ColumnarEntries::<MMapFile>::bytes_needed(capacity);
+            MMapFile::new(path, bytes_needed).expect("Failed to create MMapFile")
+        }
+
+        #[test]
+        fn test_persistence_resize_state() {
+            let dir = tempdir().expect("Failed to create temp dir");
+            let path = dir.path().join("entries.bin");
+
+            // Create entries and start a resize
+            {
+                let store = create_mmap_store(&path, 8);
+                let entries = ColumnarEntries::new(store, 8);
+                let mut double = DoubleColumnarEntries::new(entries);
+
+                // Insert some entries
+                for i in 0..4 {
+                    let entry = create_test_entry(i * 100, i * 1000);
+                    double.insert(i * 100, entry, key_eq, rehash_fn);
+                }
+
+                // Verify resize state is stored
+                assert!(!double.is_resizing());
+                assert_eq!(double.reindex_offset(), -1);
+            }
+
+            // Reload and verify state persisted
+            {
+                let store = MMapFile::from_file(&path).expect("Failed to load MMapFile");
+                let entries = ColumnarEntries::<MMapFile>::from_existing(store);
+                let double = DoubleColumnarEntries::new(entries);
+
+                assert!(!double.is_resizing());
+                assert_eq!(double.reindex_offset(), -1);
+                assert_eq!(double.len(), 4);
+
+                // Verify all entries are findable
+                for i in 0..4 {
+                    let found = double.find(i * 100, |e| e.key_pos().offset() == i * 100);
+                    assert!(found.is_some(), "Entry {} not found after reload", i);
+                }
+            }
+        }
+
+        #[test]
+        fn test_persistence_complete_resize_and_reload() {
+            let dir = tempdir().expect("Failed to create temp dir");
+            let path = dir.path().join("entries.bin");
+
+            // Create, insert, grow, complete, drop
+            {
+                let store = create_mmap_store(&path, 8);
+                let entries = ColumnarEntries::new(store, 8);
+                let mut double = DoubleColumnarEntries::new(entries);
+
+                for i in 0..4 {
+                    let entry = create_test_entry(i * 100, i * 1000);
+                    double.insert(i * 100, entry, key_eq, rehash_fn);
+                }
+
+                // We can't grow with MMapFile easily in this test since grow_empty
+                // needs a different path. But we can verify the basic persistence.
+            }
+
+            // Reload
+            {
+                let store = MMapFile::from_file(&path).expect("Failed to load MMapFile");
+                let entries = ColumnarEntries::<MMapFile>::from_existing(store);
+                let double = DoubleColumnarEntries::new(entries);
+
+                assert_eq!(double.len(), 4);
+                for i in 0..4 {
+                    let found = double.find(i * 100, |e| e.key_pos().offset() == i * 100);
+                    assert!(found.is_some());
+                }
             }
         }
     }

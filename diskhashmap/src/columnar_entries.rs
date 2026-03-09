@@ -56,6 +56,7 @@ impl EntryState {
 }
 
 /// Header stored at the beginning of the columnar storage.
+/// Contains both length/capacity and resize state for persistence.
 #[derive(Debug, Clone, Copy, Pod, Zeroable, PartialEq)]
 #[repr(C)]
 pub struct ColumnarHeader {
@@ -63,13 +64,27 @@ pub struct ColumnarHeader {
     pub len: u64,
     /// Total capacity (number of slots)
     pub capacity: u64,
+    /// Current offset into old_entries for rehashing (-1 means not resizing)
+    pub reindex_offset: i64,
+    /// Number of entries to rehash per insert operation
+    pub reindex_batch: u64,
 }
 
 impl ColumnarHeader {
-    pub const SIZE: usize = 16;
+    pub const SIZE: usize = 32;
 
     pub fn new(capacity: u64) -> Self {
-        Self { len: 0, capacity }
+        Self {
+            len: 0,
+            capacity,
+            reindex_offset: -1,
+            reindex_batch: 4,
+        }
+    }
+
+    /// Returns true if we're currently in the middle of a resize.
+    pub fn is_resizing(&self) -> bool {
+        self.reindex_offset >= 0
     }
 }
 
@@ -203,6 +218,31 @@ impl<BS: ByteStore> ColumnarEntries<BS> {
     /// Get number of occupied entries.
     pub fn len(&self) -> usize {
         self.header().len as usize
+    }
+
+    /// Get the reindex offset (-1 if not resizing).
+    pub fn reindex_offset(&self) -> i64 {
+        self.header().reindex_offset
+    }
+
+    /// Set the reindex offset.
+    pub fn set_reindex_offset(&mut self, offset: i64) {
+        self.header_mut().reindex_offset = offset;
+    }
+
+    /// Get the reindex batch size.
+    pub fn reindex_batch(&self) -> u64 {
+        self.header().reindex_batch
+    }
+
+    /// Set the reindex batch size.
+    pub fn set_reindex_batch(&mut self, batch: u64) {
+        self.header_mut().reindex_batch = batch;
+    }
+
+    /// Check if this array is in the middle of being resized from.
+    pub fn is_resizing(&self) -> bool {
+        self.header().is_resizing()
     }
 
     /// Get total capacity.
