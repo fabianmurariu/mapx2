@@ -35,8 +35,8 @@ fn benchmark_hash_map_comparisons(c: &mut Criterion) {
         let mut group = c.benchmark_group(format!("size={size}"));
         if size >= 1_000_000 {
             // Reduce sample count for large benchmarks
-            group.sample_size(10);
-            group.measurement_time(Duration::from_secs(60));
+            group.sample_size(20);
+            group.measurement_time(Duration::from_secs(100));
         }
 
         let data = generate_data(size);
