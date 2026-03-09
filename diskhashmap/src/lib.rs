@@ -40,7 +40,9 @@
 //! ```
 
 pub mod byte_store;
+pub mod columnar_entries;
 pub mod disk_map;
+pub mod double_columnar_entries;
 pub mod entries;
 pub mod entry;
 pub mod error;
