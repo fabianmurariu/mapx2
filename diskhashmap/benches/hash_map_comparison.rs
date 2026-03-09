@@ -31,7 +31,7 @@ fn generate_data(size: usize) -> Vec<(Vec<u8>, Vec<u8>)> {
 use std::time::Duration;
 
 fn benchmark_hash_map_comparisons(c: &mut Criterion) {
-    for &size in &[10_000, 100_000, 1_000_000] {
+    for &size in &[10_000, 100_000, 1_000_000, 10_000_000] {
         let mut group = c.benchmark_group(format!("size={size}"));
         if size >= 1_000_000 {
             // Reduce sample count for large benchmarks
