@@ -31,7 +31,7 @@ fn generate_data(size: usize) -> Vec<(Vec<u8>, Vec<u8>)> {
 use std::time::Duration;
 
 fn benchmark_hash_map_comparisons(c: &mut Criterion) {
-    for &size in &[/*10_000, 100_000, */ 1_000_000, 10_000_000] {
+    for &size in &[10_000, 100_000, 1_000_000] {
         let mut group = c.benchmark_group(format!("size={size}"));
         if size >= 1_000_000 {
             // Reduce sample count for large benchmarks
@@ -71,34 +71,34 @@ fn benchmark_hash_map_comparisons(c: &mut Criterion) {
             })
         });
 
-        // --- Sled DB ---
-        group.bench_function("Sled - insert", |b| {
-            b.iter_with_setup(
-                || tempdir().unwrap(),
-                |dir| {
-                    let db = sled::open(dir.path()).unwrap();
-                    for (k, v) in data.iter() {
-                        db.insert(black_box(k.as_slice()), black_box(v.as_slice()))
-                            .unwrap();
-                    }
-                    db.flush().unwrap();
-                },
-            )
-        });
-
-        let sled_dir_get = tempdir().unwrap();
-        let sled_db_get = sled::open(sled_dir_get.path()).unwrap();
-        for (k, v) in data.iter() {
-            sled_db_get.insert(k, v.as_slice()).unwrap();
-        }
-        sled_db_get.flush().unwrap();
-        group.bench_function("Sled - get", |b| {
-            b.iter(|| {
-                for (k, _) in data.iter() {
-                    black_box(sled_db_get.get(black_box(k)).unwrap());
-                }
-            })
-        });
+        // // --- Sled DB ---
+        // group.bench_function("Sled - insert", |b| {
+        //     b.iter_with_setup(
+        //         || tempdir().unwrap(),
+        //         |dir| {
+        //             let db = sled::open(dir.path()).unwrap();
+        //             for (k, v) in data.iter() {
+        //                 db.insert(black_box(k.as_slice()), black_box(v.as_slice()))
+        //                     .unwrap();
+        //             }
+        //             db.flush().unwrap();
+        //         },
+        //     )
+        // });
+        //
+        // let sled_dir_get = tempdir().unwrap();
+        // let sled_db_get = sled::open(sled_dir_get.path()).unwrap();
+        // for (k, v) in data.iter() {
+        //     sled_db_get.insert(k, v.as_slice()).unwrap();
+        // }
+        // sled_db_get.flush().unwrap();
+        // group.bench_function("Sled - get", |b| {
+        //     b.iter(|| {
+        //         for (k, _) in data.iter() {
+        //             black_box(sled_db_get.get(black_box(k)).unwrap());
+        //         }
+        //     })
+        // });
     }
 }
 
