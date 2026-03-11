@@ -330,7 +330,8 @@ where
     pub fn contains_key<'a>(&self, key: &'a <K as BytesEncode<'a>>::EItem) -> Result<bool> {
         let shard_idx = self.shard_for_key(key)?;
         let shard = self.shards[shard_idx].read();
-        Ok(shard.get(key)?.is_some())
+        let res = shard.get(key)?;
+        Ok(res.is_some())
     }
 
     /// Get the number of shards.

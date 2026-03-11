@@ -479,13 +479,13 @@ impl<BS: ByteStore> DoubleArrayEntries<BS> {
         }
     }
 
-    pub(crate) fn find_entry(
-        &self,
+    pub(crate) fn find_entry<'a>(
+        &'a self,
         hash: usize,
-        state: &EntriesState,
+        state: &'a EntriesState,
     ) -> (
-        impl Iterator<Item = (SlotIdx, &Entry)>,
-        impl Iterator<Item = (SlotIdx, &Entry)>,
+        impl Iterator<Item = (SlotIdx, &'a Entry)> + 'a,
+        impl Iterator<Item = (SlotIdx, &'a Entry)> + 'a,
     ) {
         let index_new = hash % self.new_entries.len();
         let old_iter = self
