@@ -29,7 +29,10 @@ fn test_u64_to_u64(config: StressTestConfig) -> Result<()> {
 
     println!("📊 Configuration:");
     println!("   Using: {} entries", num_entries);
-    println!("   Estimated data size: {:.2} GB", (num_entries * bytes_per_entry) as f64 / (1024.0 * 1024.0 * 1024.0));
+    println!(
+        "   Estimated data size: {:.2} GB",
+        (num_entries * bytes_per_entry) as f64 / (1024.0 * 1024.0 * 1024.0)
+    );
 
     // Phase 1: Generate data
     println!("\n📝 Phase 1: Generating data into std::HashMap...");
@@ -43,7 +46,11 @@ fn test_u64_to_u64(config: StressTestConfig) -> Result<()> {
         std_map.insert(key, value);
     }
 
-    println!("✅ Generated {} unique entries in {:?}", std_map.len(), gen_start.elapsed());
+    println!(
+        "✅ Generated {} unique entries in {:?}",
+        std_map.len(),
+        gen_start.elapsed()
+    );
 
     // Phase 2: Insert into DiskHashMap with verification
     println!("\n💾 Phase 2: Inserting into DiskHashMap with verification...");
@@ -199,7 +206,10 @@ fn test_str_to_str(config: StressTestConfig) -> Result<()> {
 
     println!("📊 Configuration:");
     println!("   Using: {} entries", num_entries);
-    println!("   Estimated size: {:.2} GB", (num_entries * bytes_per_entry) as f64 / (1024.0 * 1024.0 * 1024.0));
+    println!(
+        "   Estimated size: {:.2} GB",
+        (num_entries * bytes_per_entry) as f64 / (1024.0 * 1024.0 * 1024.0)
+    );
 
     // Phase 1: Generate data
     println!("\n📝 Phase 1: Generating string data...");
@@ -220,7 +230,11 @@ fn test_str_to_str(config: StressTestConfig) -> Result<()> {
         std_map.insert(key, value);
     }
 
-    println!("✅ Generated {} unique entries in {:?}", std_map.len(), gen_start.elapsed());
+    println!(
+        "✅ Generated {} unique entries in {:?}",
+        std_map.len(),
+        gen_start.elapsed()
+    );
 
     // Phase 2: Insert and verify
     println!("\n💾 Phase 2: Inserting into DiskHashMap...");
@@ -261,8 +275,10 @@ fn test_str_to_str(config: StressTestConfig) -> Result<()> {
 
             if last_report.elapsed().as_secs() >= 5 {
                 let rate = insert_count as f64 / insert_start.elapsed().as_secs_f64();
-                println!("   Progress: {}/{} ({:.1}%) - {:.0} inserts/sec",
-                    insert_count, num_entries,
+                println!(
+                    "   Progress: {}/{} ({:.1}%) - {:.0} inserts/sec",
+                    insert_count,
+                    num_entries,
                     (insert_count as f64 / num_entries as f64) * 100.0,
                     rate
                 );
@@ -271,7 +287,11 @@ fn test_str_to_str(config: StressTestConfig) -> Result<()> {
         }
     }
 
-    println!("✅ Inserted {} entries in {:?}", insert_count, insert_start.elapsed());
+    println!(
+        "✅ Inserted {} entries in {:?}",
+        insert_count,
+        insert_start.elapsed()
+    );
 
     println!("\n{}", "=".repeat(80));
     println!("🎉 {} - PASSED", config.test_name);
@@ -294,7 +314,10 @@ fn test_bytes_to_bytes(config: StressTestConfig) -> Result<()> {
 
     println!("📊 Configuration:");
     println!("   Using: {} entries", num_entries);
-    println!("   Estimated size: {:.2} GB", (num_entries * bytes_per_entry) as f64 / (1024.0 * 1024.0 * 1024.0));
+    println!(
+        "   Estimated size: {:.2} GB",
+        (num_entries * bytes_per_entry) as f64 / (1024.0 * 1024.0 * 1024.0)
+    );
 
     // Phase 1: Generate data
     println!("\n📝 Phase 1: Generating byte data...");
@@ -314,7 +337,11 @@ fn test_bytes_to_bytes(config: StressTestConfig) -> Result<()> {
         std_map.insert(key, value);
     }
 
-    println!("✅ Generated {} unique entries in {:?}", std_map.len(), gen_start.elapsed());
+    println!(
+        "✅ Generated {} unique entries in {:?}",
+        std_map.len(),
+        gen_start.elapsed()
+    );
 
     // Phase 2: Insert and verify
     println!("\n💾 Phase 2: Inserting into DiskHashMap...");
@@ -353,8 +380,10 @@ fn test_bytes_to_bytes(config: StressTestConfig) -> Result<()> {
 
             if last_report.elapsed().as_secs() >= 5 {
                 let rate = insert_count as f64 / insert_start.elapsed().as_secs_f64();
-                println!("   Progress: {}/{} ({:.1}%) - {:.0} inserts/sec",
-                    insert_count, num_entries,
+                println!(
+                    "   Progress: {}/{} ({:.1}%) - {:.0} inserts/sec",
+                    insert_count,
+                    num_entries,
                     (insert_count as f64 / num_entries as f64) * 100.0,
                     rate
                 );
@@ -363,7 +392,11 @@ fn test_bytes_to_bytes(config: StressTestConfig) -> Result<()> {
         }
     }
 
-    println!("✅ Inserted {} entries in {:?}", insert_count, insert_start.elapsed());
+    println!(
+        "✅ Inserted {} entries in {:?}",
+        insert_count,
+        insert_start.elapsed()
+    );
 
     println!("\n{}", "=".repeat(80));
     println!("🎉 {} - PASSED", config.test_name);

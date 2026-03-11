@@ -3,16 +3,87 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use bytemuck::{Pod, Zeroable};
-use modular_bitfield::prelude::*;
 
 use crate::byte_store::{ByteStore, MMapFile, VecStore};
 
-#[bitfield(bits = 62)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Zeroable, Pod, Specifier)]
-#[repr(C)]
-pub struct HeapIdx {
-    pub category: B8,
-    pub offset: B54,
+/// Heap index encoding: category (8 bits) + offset (40 bits) = 48 bits total
+/// This fits in Entry.pos (48 bits) for compact storage.
+/// - category: slab size class (0-255, currently using 16 slabs)
+/// - offset: position within the slab (0 to 1 TB addressable per slab)
+///
+/// Stored as u64 but only uses 48 bits (upper 16 bits must be 0).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Zeroable, Pod)]
+#[repr(transparent)]
+pub struct HeapIdx(u64);
+
+impl std::fmt::Debug for HeapIdx {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HeapIdx")
+            .field("category", &self.category())
+            .field("offset", &self.offset())
+            .finish()
+    }
+}
+
+impl HeapIdx {
+    const CATEGORY_BITS: u32 = 8;
+    const OFFSET_BITS: u32 = 40;
+    const CATEGORY_MASK: u64 = 0xFF;
+    const OFFSET_MASK: u64 = (1u64 << Self::OFFSET_BITS) - 1;
+
+    /// Maximum value that fits in 48 bits
+    pub const MAX_VALUE: u64 = (1u64 << 48) - 1;
+
+    /// Create a new HeapIdx with category=0 and offset=0.
+    #[inline]
+    pub const fn new() -> Self {
+        Self(0)
+    }
+
+    /// Create a HeapIdx from category and offset.
+    #[inline]
+    pub fn from_parts(category: u8, offset: u64) -> Self {
+        debug_assert!(offset <= Self::OFFSET_MASK, "offset exceeds 40 bits");
+        Self((category as u64) | (offset << Self::CATEGORY_BITS))
+    }
+
+    /// Get the category (slab index).
+    #[inline]
+    pub fn category(&self) -> u8 {
+        (self.0 & Self::CATEGORY_MASK) as u8
+    }
+
+    /// Get the offset within the slab.
+    #[inline]
+    pub fn offset(&self) -> u64 {
+        self.0 >> Self::CATEGORY_BITS
+    }
+
+    /// Set the category (returns new HeapIdx).
+    #[inline]
+    pub fn with_category(self, category: u8) -> Self {
+        Self((self.0 & !Self::CATEGORY_MASK) | (category as u64))
+    }
+
+    /// Set the offset (returns new HeapIdx).
+    #[inline]
+    pub fn with_offset(self, offset: u64) -> Self {
+        debug_assert!(offset <= Self::OFFSET_MASK, "offset exceeds 40 bits");
+        Self((self.0 & Self::CATEGORY_MASK) | (offset << Self::CATEGORY_BITS))
+    }
+
+    /// Convert to u64 (for storing in Entry.pos).
+    #[inline]
+    pub fn as_u64(&self) -> u64 {
+        self.0
+    }
+
+    /// Create from u64 (for loading from Entry.pos).
+    #[inline]
+    pub fn from_u64(value: u64) -> Self {
+        debug_assert!(value <= Self::MAX_VALUE, "value exceeds 48 bits");
+        Self(value)
+    }
 }
 
 // impl From<HeapIdx> for u64 {
@@ -273,6 +344,12 @@ impl<S: ByteStore> Drop for PageEntry<'_, S> {
                 panic!("Failed to flush PageEntry: {e}");
             });
         }
+    }
+}
+
+impl<S: ByteStore> AsMut<[u8]> for PageEntry<'_, S> {
+    fn as_mut(&mut self) -> &mut [u8] {
+        self.page_mut()
     }
 }
 

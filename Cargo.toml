@@ -41,6 +41,7 @@ rayon = "1.10.0"
 parking_lot = "0.12"
 lock_api = "0.4.13"
 thiserror = "2.0"
+indicatif = "0.18.4"
 
 [profile.release-with-debug]
 inherits = "release"

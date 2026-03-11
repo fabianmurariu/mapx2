@@ -12,7 +12,7 @@ use crate::entry::Entry;
 use crate::error::Result;
 use crate::fixed_buffers::FixedVec;
 use crate::heap::HeapOps;
-use crate::types::{BytesActual, BytesDecode, BytesEncode, Native, Str};
+use crate::types::{BytesDecode, BytesEncode, KVPair, Native, Str};
 use crate::{ByteStore, Heap, HeapIdx};
 
 // Type aliases for common use cases
@@ -35,6 +35,7 @@ where
     BS: ByteStore,
     S: BuildHasher + Default,
     Heap<BS>: HeapOps<BS>,
+    K: for<'a> BytesDecode<'a>,
 {
     /// Returns true if the entry is occupied
     pub fn is_occupied(&self) -> bool {
@@ -46,15 +47,15 @@ where
         matches!(self, MapEntry::Vacant(_))
     }
 
-    pub fn key(&self) -> <K as BytesDecode<'_>>::DItem
-    where
-        K: for<'a> BytesDecode<'a>,
-    {
+    pub fn key(&self) -> <K as BytesDecode<'_>>::DItem {
         let k = match self {
-            MapEntry::Occupied(entry) => <K as BytesDecode>::bytes_decode(entry.key_bytes()),
+            MapEntry::Occupied(entry) => {
+                let (key, _) = KVPair::<K, ()>::decode_key(entry.kv_bytes()).unwrap();
+                return key;
+            }
             MapEntry::Vacant(entry) => <K as BytesDecode>::bytes_decode(&entry.key),
         };
-        k.expect("Failed to decode key")
+        k.expect("Failed to decode key").0
     }
 }
 
@@ -67,6 +68,7 @@ where
     map: &'a mut DiskHashMap<K, V, BS, S>,
     slot_idx: SlotIdx,
     entry: Entry,
+    hash: u64,
 }
 
 /// A view into a vacant entry in the map
@@ -79,6 +81,7 @@ where
     key: Vec<u8>, // rethink this to be &[u8] with correct lifetime different from the map
     key_len: Option<usize>,
     slot_idx: SlotIdx,
+    hash: u64,
 }
 
 /// This is an open address hash map implementation with trait-based encoding/decoding.
@@ -143,57 +146,6 @@ where
         &self.entries
     }
 
-    /// Returns an iterator over the key-value pairs of the map.
-    pub fn iter<'a>(
-        &'a self,
-    ) -> impl Iterator<Item = Result<(<K as BytesDecode<'a>>::DItem, <V as BytesDecode<'a>>::DItem)>> + 'a
-    where
-        K: for<'b> BytesDecode<'b>,
-        V: for<'b> BytesDecode<'b>,
-        Heap<BS>: HeapOps<BS>,
-    {
-        let EntriesState {
-            reindex_offset,
-            occupied_count,
-            ..
-        } = *self.entries_state();
-        self.entries()
-            .iter(reindex_offset, occupied_count as usize)
-            .map(|(_, entry)| {
-                let key_bytes = self
-                    .heap
-                    .get(entry.key_pos())
-                    .expect("key must exist for occupied entry");
-                let value_bytes = self
-                    .heap
-                    .get(entry.value_pos())
-                    .expect("value must exist for occupied entry");
-                let key = K::bytes_decode(key_bytes)?;
-                let value = V::bytes_decode(value_bytes)?;
-                Ok((key, value))
-            })
-    }
-
-    /// Returns an iterator over the keys of the map.
-    pub fn keys(&self) -> impl Iterator<Item = Result<<K as BytesDecode<'_>>::DItem>> + '_
-    where
-        K: for<'a> BytesDecode<'a>,
-        V: for<'a> BytesDecode<'a>,
-        Heap<BS>: HeapOps<BS>,
-    {
-        self.iter().map(|res| res.map(|(k, _)| k))
-    }
-
-    /// Returns an iterator over the values of the map.
-    pub fn values(&self) -> impl Iterator<Item = Result<<V as BytesDecode<'_>>::DItem>> + '_
-    where
-        K: for<'a> BytesDecode<'a>,
-        V: for<'a> BytesDecode<'a>,
-        Heap<BS>: HeapOps<BS>,
-    {
-        self.iter().map(|res| res.map(|(_, v)| v))
-    }
-
     /// Check if resizing is needed based on load factor
     fn should_resize(&self) -> bool {
         if self.capacity() == 0 {
@@ -202,81 +154,6 @@ where
         // Resize when load factor exceeds 50% to reduce resize frequency.
         // Trade-off: slightly longer probe distances at peak, but fewer resize cycles.
         self.load_factor() > 0.5
-    }
-
-    /// Find the slot index for a key
-    /// if the key is found, returns Some(index),
-    /// if the key is not found return the first empty slot index
-    fn find_slot(
-        &self,
-        key: &[u8],
-        mut eq_fn: impl FnMut(&[u8], &[u8]) -> bool,
-        hash_fn: impl Fn(&[u8]) -> u64,
-    ) -> std::result::Result<(SlotIdx, &Entry), (SlotIdx, &Entry)> {
-        let hash = hash_fn(key);
-        let (new_entries, old_entries) =
-            self.entries.find_entry(hash as usize, self.entries_state());
-
-        let entries_state = self.entries_state();
-        if entries_state.reindex_offset < 0 {
-            // we are not resizing, just search in the current entries array
-            // find the first entry that equals the key or is empty
-
-            for pair @ (_, entry) in new_entries {
-                if entry.is_empty() {
-                    return Err(pair);
-                }
-                if entry.is_occupied() {
-                    let key_data = self
-                        .heap
-                        .get(entry.key_pos())
-                        .expect("key must exist for occupied entry");
-                    if eq_fn(key, key_data) {
-                        return Ok(pair);
-                    }
-                }
-            }
-            unreachable!("should have found an empty slot");
-        } else {
-            let mut candidate_entry = Err((SlotIdx::max(), &EMPTY_ENTRY));
-            // new entries must only be returned on the new_entries array
-            for pair @ (_, entry) in new_entries {
-                if entry.is_empty() {
-                    candidate_entry = Err(pair);
-                    break;
-                }
-                if entry.is_occupied() {
-                    let key_data = self
-                        .heap
-                        .get(entry.key_pos())
-                        .expect("key must exist for occupied entry");
-                    if eq_fn(key, key_data) {
-                        candidate_entry = Ok(pair);
-                        break;
-                    }
-                }
-            }
-
-            // need to check old entries maybe the entry exists in the old array
-            if candidate_entry.is_err() {
-                for pair @ (_, entry) in old_entries {
-                    if entry.is_empty() {
-                        break; // no need to continue, we found an empty slot
-                    }
-                    if entry.is_occupied() {
-                        let key_data = self
-                            .heap
-                            .get(entry.key_pos())
-                            .expect("key must exist for occupied entry");
-                        if eq_fn(key, key_data) {
-                            candidate_entry = Ok(pair);
-                            break;
-                        }
-                    }
-                }
-            }
-            candidate_entry
-        }
     }
 
     pub(crate) fn entries_state(&self) -> &EntriesState {
@@ -297,50 +174,6 @@ where
             .expect("EntriesState must exist in heap");
         bytemuck::from_bytes_mut::<EntriesState>(&mut es_bytes[0..size_of::<EntriesState>()])
     }
-
-    fn insert_key_into_heap(
-        &mut self,
-        key_bytes: &[u8],
-        key_len: Option<usize>,
-    ) -> Result<crate::HeapIdx> {
-        let key_idx = if let Some(key_len) = key_len {
-            let mut page = self
-                .heap
-                .next_free_page(size_of::<usize>() + key_bytes.len());
-
-            page.write_with_len(key_len, key_bytes)?;
-            page.flush()?;
-            page.pos()
-        } else {
-            let mut page = self.heap.next_free_page(key_bytes.len());
-            page.write(key_bytes)?; // Store 0 length for empty key
-            page.flush()?;
-            page.pos()
-        };
-        Ok(key_idx)
-    }
-
-    fn insert_value_into_heap(
-        &mut self,
-        value_bytes: &[u8],
-        value_len: Option<usize>,
-    ) -> Result<crate::HeapIdx> {
-        let value_idx = if let Some(value_len) = value_len {
-            let mut page = self
-                .heap
-                .next_free_page(size_of::<usize>() + value_bytes.len());
-
-            page.write_with_len(value_len, value_bytes)?;
-            page.flush()?;
-            page.pos()
-        } else {
-            let mut page = self.heap.next_free_page(value_bytes.len());
-            page.write(value_bytes)?; // the decoder will work out the length, no need to track it
-            page.flush()?;
-            page.pos()
-        };
-        Ok(value_idx)
-    }
 }
 
 impl<
@@ -352,6 +185,128 @@ impl<
 where
     Heap<BS>: HeapOps<BS>,
 {
+    /// Returns an iterator over the key-value pairs of the map.
+    pub fn iter<'a>(
+        &'a self,
+    ) -> impl Iterator<Item = Result<(<K as BytesDecode<'a>>::DItem, <V as BytesDecode<'a>>::DItem)>> + 'a
+    {
+        let EntriesState {
+            reindex_offset,
+            occupied_count,
+            ..
+        } = *self.entries_state();
+        self.entries()
+            .iter(reindex_offset, occupied_count as usize)
+            .map(|(_, entry)| {
+                let kv_bytes = self.get_kv_bytes(&entry);
+                let (key, value, _) = KVPair::<K, V>::decode_key_value(kv_bytes)?;
+                Ok((key, value))
+            })
+    }
+
+    /// Returns an iterator over the keys of the map.
+    pub fn keys(&self) -> impl Iterator<Item = Result<<K as BytesDecode<'_>>::DItem>> + '_ {
+        self.iter().map(|res| res.map(|(k, _)| k))
+    }
+
+    /// Returns an iterator over the values of the map.
+    pub fn values(&self) -> impl Iterator<Item = Result<<V as BytesDecode<'_>>::DItem>> + '_ {
+        self.iter().map(|res| res.map(|(_, v)| v))
+    }
+
+    /// Get the KV bytes for an entry
+    fn get_kv_bytes(&self, entry: &Entry) -> &[u8] {
+        let pos = entry.pos();
+        let heap_idx = HeapIdx::from_u64(pos);
+        self.heap
+            .get(heap_idx)
+            .expect("kv data must exist for occupied entry")
+    }
+
+    /// Find the slot index for a key
+    /// if the key is found, returns Ok(index, entry, hash),
+    /// if the key is not found returns Err((first_empty_slot_index, entry, hash))
+    fn find_slot(
+        &self,
+        key: &[u8],
+        mut eq_fn: impl FnMut(&[u8], &[u8]) -> bool,
+        hash_fn: impl Fn(&[u8]) -> u64,
+    ) -> std::result::Result<(SlotIdx, &Entry, u64), (SlotIdx, &Entry, u64)> {
+        let hash = hash_fn(key);
+        let (new_entries, old_entries) =
+            self.entries.find_entry(hash as usize, self.entries_state());
+
+        let entries_state = self.entries_state();
+        if entries_state.reindex_offset < 0 {
+            // we are not resizing, just search in the current entries array
+            // find the first entry that equals the key or is empty
+
+            for pair @ (_, entry) in new_entries {
+                if entry.is_empty() {
+                    return Err((pair.0, pair.1, hash));
+                }
+                if entry.is_occupied() {
+                    // Quick rejection via hash prefix
+                    if !entry.hash_prefix_matches(hash) {
+                        continue;
+                    }
+                    let kv_bytes = self.get_kv_bytes(entry);
+                    let (key_bytes, _) = KVPair::<K, V>::get_key_bytes(kv_bytes)
+                        .expect("key must exist for occupied entry");
+                    if eq_fn(key, key_bytes) {
+                        return Ok((pair.0, pair.1, hash));
+                    }
+                }
+            }
+            unreachable!("should have found an empty slot");
+        } else {
+            let mut candidate_entry = Err((SlotIdx::max(), &EMPTY_ENTRY, hash));
+            // new entries must only be returned on the new_entries array
+            for pair @ (_, entry) in new_entries {
+                if entry.is_empty() {
+                    candidate_entry = Err((pair.0, pair.1, hash));
+                    break;
+                }
+                if entry.is_occupied() {
+                    // Quick rejection via hash prefix
+                    if !entry.hash_prefix_matches(hash) {
+                        continue;
+                    }
+                    let kv_bytes = self.get_kv_bytes(entry);
+                    let (key_bytes, _) = KVPair::<K, V>::get_key_bytes(kv_bytes)
+                        .expect("key must exist for occupied entry");
+                    if eq_fn(key, key_bytes) {
+                        candidate_entry = Ok((pair.0, pair.1, hash));
+                        break;
+                    }
+                }
+            }
+
+            // need to check old entries maybe the entry exists in the old array
+            if candidate_entry.is_err() {
+                for pair @ (_, entry) in old_entries {
+                    if entry.is_empty() {
+                        break; // no need to continue, we found an empty slot
+                    }
+                    if entry.is_occupied() {
+                        // Quick rejection via hash prefix
+                        if !entry.hash_prefix_matches(hash) {
+                            continue;
+                        }
+                        let kv_bytes = self.get_kv_bytes(entry);
+                        let (key_bytes, _) = KVPair::<K, V>::get_key_bytes(kv_bytes)
+                            .expect("key must exist for occupied entry");
+                        if eq_fn(key, key_bytes) {
+                            candidate_entry = Ok((pair.0, pair.1, hash));
+                            break;
+                        }
+                    }
+                }
+            }
+            candidate_entry
+        }
+    }
+
     fn grow(&mut self) -> Result<()> {
         let new_capacity = if self.capacity() == 0 {
             16
@@ -390,95 +345,126 @@ where
         }
 
         let (key_len, key_bytes) = K::bytes_encode(key)?;
-        let (value_len, value_bytes) = V::bytes_encode(value)?;
 
-        self.insert_key_value_bytes(&key_bytes, key_len, &value_bytes, value_len)
-    }
+        // Compute hash from actual key bytes
+        let hash = {
+            let mut hasher = self.hasher.build_hasher();
+            <K as BytesEncode>::hash_alt(&key_bytes, &mut hasher)
+        };
 
-    /// Common insertion logic for key-value pairs using raw bytes
-    fn insert_key_value_bytes(
-        &mut self,
-        key_bytes: &[u8],
-        key_len: Option<usize>,
-        value_bytes: &[u8],
-        value_len: Option<usize>,
-    ) -> Result<Option<<V as BytesDecode<'_>>::DItem>> {
-        match self.find_slot_inner(key_bytes) {
-            Err((slot_idx, _)) => {
+        match self.find_slot_inner(&key_bytes) {
+            Err((slot_idx, _, _)) => {
                 // Found an empty slot, insert new key-value pair
-                self.insert_new_entry(slot_idx, key_bytes, key_len, value_bytes, value_len)?;
+                self.insert_new_entry(slot_idx, hash, key, value)?;
                 Ok(None)
             }
-            Ok((slot_idx, entry)) => {
+            Ok((slot_idx, entry, _)) => {
                 // Key already exists, update value
                 let entry = *entry;
-                self.update_existing_entry(slot_idx, &entry, value_bytes, value_len)
+                self.update_existing_entry(slot_idx, &entry, hash, key, value)
             }
         }
     }
 
     /// Insert a new entry at the given slot index
-    fn insert_new_entry(
+    fn insert_new_entry<'a>(
         &mut self,
         slot_idx: SlotIdx,
-        key_bytes: &[u8],
-        key_len: Option<usize>,
-        value_bytes: &[u8],
-        value_len: Option<usize>,
+        hash: u64,
+        key: &'a <K as BytesEncode<'a>>::EItem,
+        value: &'a <V as BytesEncode<'a>>::EItem,
     ) -> Result<Entry> {
-        let key_idx = self.insert_key_into_heap(key_bytes, key_len)?;
-        let value_idx = self.insert_value_into_heap(value_bytes, value_len)?;
+        // Encode KV pair with hash
+        let kv_idx = {
+            let mut kv_bytes =
+                KVPair::<K, V>::encode(hash, key, value, |size| self.heap.next_free_page(size))?;
+            kv_bytes.flush()?;
+            kv_bytes.pos()
+        };
+
+        // Store in heap and get position before releasing page borrow
+        // let kv_idx = {
+        //     let mut page = self.heap.next_free_page(kv_bytes.len());
+        //     page.write(&kv_bytes)?;
+        //     page.flush()?;
+        //     page.pos()
+        // };
+
+        // Convert HeapIdx to u64 for storage in Entry (48-bit pos)
+        let pos = kv_idx.as_u64();
+
         let mut entries_state = *(self.entries_state());
+        let entries_size_category = self.entries_size_category;
         let DiskHashMap { entries, heap, .. } = self;
 
-        let entry = Entry::occupied_at_pos(key_idx, value_idx);
+        let entry = Entry::occupied_at(pos, hash);
         entries.set_entry(slot_idx, entry, &mut entries_state, |entry| {
-            let mut hasher = self.hasher.build_hasher();
-            let key_bytes = heap
-                .get(entry.key_pos())
-                .expect("key must exist for occupied entry");
-            <K as BytesEncode>::hash_alt(<K as BytesActual>::bytes_actual(key_bytes), &mut hasher)
-                as usize
+            let kv_bytes = {
+                let pos = entry.pos();
+                let heap_idx = HeapIdx::from_u64(pos);
+                heap.get(heap_idx)
+                    .expect("kv data must exist for occupied entry")
+            };
+            KVPair::<K, V>::decode_hash(kv_bytes) as usize
         });
 
         entries_state.occupied_count += 1;
         // Update the entries state in the heap
-        *Self::entries_state_mut(heap, self.entries_size_category as u8) = entries_state;
+        *Self::entries_state_mut(heap, entries_size_category as u8) = entries_state;
         self.size += 1;
         Ok(entry)
     }
 
     /// Update an existing entry at the given slot index
-    fn update_existing_entry(
-        &mut self,
+    fn update_existing_entry<'a, 'b>(
+        &'b mut self,
         slot_idx: SlotIdx,
         entry: &Entry,
-        value_bytes: &[u8],
-        value_len: Option<usize>,
-    ) -> Result<Option<<V as BytesDecode<'_>>::DItem>> {
-        let new_value_idx = self.insert_value_into_heap(value_bytes, value_len)?;
-        let mut entries_state = *(self.entries_state());
-        let DiskHashMap { heap, entries, .. } = self;
-        let old_value_idx = entry.value_pos();
-        let entry = entry.with_v_pos(new_value_idx);
+        hash: u64,
+        key: &'a <K as BytesEncode<'a>>::EItem,
+        value: &'a <V as BytesEncode<'a>>::EItem,
+    ) -> Result<Option<<V as BytesDecode<'b>>::DItem>> {
+        // Get position of old entry - we'll decode old value after updating
+        let old_pos = entry.pos();
 
-        entries.set_entry(slot_idx, entry, &mut entries_state, |entry| {
-            let mut hasher = self.hasher.build_hasher();
-            let key_bytes = heap
-                .get(entry.key_pos())
-                .expect("key must exist for occupied entry");
-            <K as BytesEncode>::hash_alt(<K as BytesActual>::bytes_actual(key_bytes), &mut hasher)
-                as usize
+        // Encode new KV pair with hash
+
+        // Store in heap and get position before releasing page borrow
+        let kv_idx = {
+            let mut page =
+                KVPair::<K, V>::encode(hash, key, value, |size| self.heap.next_free_page(size))?;
+            // let mut page = self.heap.next_free_page(kv_bytes.len());
+            // page.write(&kv_bytes)?;
+            page.flush()?;
+            page.pos()
+        };
+
+        // Convert HeapIdx to u64 for storage in Entry (48-bit pos)
+        let pos = kv_idx.as_u64();
+
+        let mut entries_state = *(self.entries_state());
+        let entries_size_category = self.entries_size_category;
+        let DiskHashMap { heap, entries, .. } = self;
+
+        let new_entry = Entry::occupied_at(pos, hash);
+        // Use update_entry instead of set_entry for direct overwrite (no probing)
+        entries.update_entry(slot_idx, new_entry, &mut entries_state, |entry| {
+            let kv_bytes = {
+                let pos = entry.pos();
+                let heap_idx = HeapIdx::from_u64(pos);
+                heap.get(heap_idx)
+                    .expect("kv data must exist for occupied entry")
+            };
+            KVPair::<K, V>::decode_hash(kv_bytes) as usize
         });
         // Update the entries state in the heap
-        *Self::entries_state_mut(heap, self.entries_size_category as u8) = entries_state;
+        *Self::entries_state_mut(heap, entries_size_category as u8) = entries_state;
 
-        // Get the old value after the mutation
-        let old_value_bytes = self
-            .heap
-            .get(old_value_idx)
-            .expect("value must exist for occupied entry");
-        let old_value = V::bytes_decode(old_value_bytes)?;
+        // Decode old value from old position (still in heap)
+        let old_heap_idx = HeapIdx::from_u64(old_pos);
+        let old_kv_bytes = self.heap.get(old_heap_idx).expect("old kv data must exist");
+        let (_, key_end) = KVPair::<K, V>::decode_key(old_kv_bytes)?;
+        let (old_value, _) = KVPair::<K, V>::decode_value(old_kv_bytes, key_end)?;
 
         Ok(Some(old_value))
     }
@@ -486,14 +472,14 @@ where
     fn find_slot_inner(
         &self,
         key: &[u8],
-    ) -> std::result::Result<(SlotIdx, &Entry), (SlotIdx, &Entry)> {
+    ) -> std::result::Result<(SlotIdx, &Entry, u64), (SlotIdx, &Entry, u64)> {
         self.find_slot(
             key,
             |l, r| <K as BytesEncode>::eq_alt(l, r),
             |k| {
                 let mut hasher = self.hasher.build_hasher();
                 <K as BytesEncode>::hash_alt(k, &mut hasher)
-            }, // Use the same hash function as grow()
+            },
         )
     }
 
@@ -503,31 +489,23 @@ where
         key: &'a <K as BytesEncode<'a>>::EItem,
     ) -> Result<Option<<V as BytesDecode<'_>>::DItem>> {
         self.find_entry(key)?.map_or(Ok(None), |entry| {
-            let value_bytes = self
-                .heap
-                .get(entry.value_pos())
-                .expect("value must exist for occupied entry");
-            V::bytes_decode(value_bytes).map(Some)
+            let kv_bytes = self.get_kv_bytes(&entry);
+            let (_, key_end) = KVPair::<K, V>::decode_key(kv_bytes)?;
+            let (value, _) = KVPair::<K, V>::decode_value(kv_bytes, key_end)?;
+            Ok(Some(value))
         })
     }
 
     pub fn get_key(&self, e: &Entry) -> Result<<K as BytesDecode<'_>>::DItem> {
-        let key_bytes = self
-            .heap
-            .get(e.key_pos())
-            .expect("key must exist for occupied entry");
-        let key = K::bytes_decode(key_bytes)?;
-
+        let kv_bytes = self.get_kv_bytes(e);
+        let (key, _) = KVPair::<K, V>::decode_key(kv_bytes)?;
         Ok(key)
     }
 
     pub fn get_value(&self, e: &Entry) -> Result<<V as BytesDecode<'_>>::DItem> {
-        let value_bytes = self
-            .heap
-            .get(e.value_pos())
-            .expect("value must exist for occupied entry");
-        let value = V::bytes_decode(value_bytes)?;
-
+        let kv_bytes = self.get_kv_bytes(e);
+        let (_, key_end) = KVPair::<K, V>::decode_key(kv_bytes)?;
+        let (value, _) = KVPair::<K, V>::decode_value(kv_bytes, key_end)?;
         Ok(value)
     }
 
@@ -538,7 +516,7 @@ where
 
         let (_, key_bytes) = K::bytes_encode(key)?;
         match self.find_slot_inner(&key_bytes) {
-            Ok((_, entry)) => {
+            Ok((_, entry, _)) => {
                 if entry.is_occupied() {
                     Ok(Some(*entry))
                 } else {
@@ -579,18 +557,20 @@ where
         let key_bytes = key.as_ref();
         match self
             .find_slot_inner(key_bytes)
-            .map(|(idx, entry)| (idx, *entry))
+            .map(|(idx, entry, hash)| (idx, *entry, hash))
         {
-            Ok((slot_idx, entry)) => MapEntry::Occupied(OccupiedEntry {
+            Ok((slot_idx, entry, hash)) => MapEntry::Occupied(OccupiedEntry {
                 map: self,
                 entry,
                 slot_idx,
+                hash,
             }),
-            Err((slot_idx, _)) => MapEntry::Vacant(VacantEntry {
+            Err((slot_idx, _, hash)) => MapEntry::Vacant(VacantEntry {
                 map: self,
                 key: key_bytes.to_vec(),
                 key_len,
                 slot_idx,
+                hash,
             }),
         }
     }
@@ -601,7 +581,6 @@ impl<K, V, S: BuildHasher + Default> DiskHashMap<K, V, VecStore, S> {
     pub fn new() -> Self {
         let mut heap = Heap::new_in_memory();
         let entries = FixedVec::<Entry, _>::new(VecStore::new());
-        let capacity = entries.capacity();
         let entries_size_category = heap.find_size_category(size_of::<EntriesState>());
 
         let es = EntriesState {
@@ -633,7 +612,6 @@ where
         let length_bytes = DEFAULT_ENTRIES_CAP * std::mem::size_of::<Entry>();
         let mut heap = Heap::new(path.join("heap"))?;
         let entries = FixedVec::<Entry, _>::new(MMapFile::new(path.join("entries"), length_bytes)?);
-        let capacity = entries.capacity();
         let es = EntriesState {
             reindex_offset: -1,
             reindex_batch: 4,
@@ -674,7 +652,6 @@ where
         // Round up to nearest power of 2
         let mut heap = Heap::new_with_capacity(path.join("heap"), slots_per_slab, max_bytes)?;
         let entries = FixedVec::<Entry, _>::new(MMapFile::new(path.join("entries"), length_bytes)?);
-        let capacity = entries.capacity();
         let es = EntriesState {
             reindex_offset: -1,
             reindex_batch: 4,
@@ -715,7 +692,6 @@ where
             // Single entries file - normal case
             let entries_path = &entries_files[0];
             let entries = FixedVec::<Entry, _>::new(MMapFile::from_file(entries_path)?);
-            let capacity = entries.capacity();
 
             Ok(Self {
                 heap,
@@ -736,7 +712,6 @@ where
             let latest_entries_path = &entries_files[1];
             let latest_entries =
                 FixedVec::<Entry, _>::new(MMapFile::from_file(latest_entries_path)?);
-            let capacity = latest_entries.len();
             let oldest_entries_path = &entries_files[0];
             let oldest_entries =
                 FixedVec::<Entry, _>::new(MMapFile::from_file(oldest_entries_path)?);
@@ -806,20 +781,14 @@ where
     S: BuildHasher + Default,
     Heap<BS>: HeapOps<BS>,
 {
-    /// Get a reference to the key in the entry
-    fn key_bytes(&self) -> &[u8] {
+    /// Get a reference to the KV bytes in the entry
+    fn kv_bytes(&self) -> &[u8] {
+        let pos = self.entry.pos();
+        let heap_idx = HeapIdx::from_u64(pos);
         self.map
             .heap
-            .get(self.entry.key_pos())
-            .expect("key must exist for occupied entry")
-    }
-
-    /// Get a reference to the value in the entry
-    fn value_bytes(&self) -> &[u8] {
-        self.map
-            .heap
-            .get(self.entry.value_pos())
-            .expect("value must exist for occupied entry")
+            .get(heap_idx)
+            .expect("kv data must exist for occupied entry")
     }
 }
 
@@ -835,34 +804,101 @@ where
 {
     /// Get the value in the entry using the trait-based API
     pub fn value(&self) -> Result<<V as BytesDecode<'_>>::DItem> {
-        let value_bytes = self.value_bytes();
-        V::bytes_decode(value_bytes)
+        let kv_bytes = self.kv_bytes();
+        let (_, key_end) = KVPair::<K, V>::decode_key(kv_bytes)?;
+        let (value, _) = KVPair::<K, V>::decode_value(kv_bytes, key_end)?;
+        Ok(value)
     }
 
     pub fn key(&self) -> Result<<K as BytesDecode<'_>>::DItem> {
-        let key_bytes = self.key_bytes();
-        K::bytes_decode(key_bytes)
+        let kv_bytes = self.kv_bytes();
+        let (key, _) = KVPair::<K, V>::decode_key(kv_bytes)?;
+        Ok(key)
     }
 
     /// Insert a new value into the entry, returning the old value
-    fn insert_bytes<V2: AsRef<[u8]>>(
-        self,
-        len: Option<usize>,
-        value: V2,
-    ) -> Result<<V as BytesDecode<'a>>::DItem> {
-        self.map
-            .update_existing_entry(self.slot_idx, &self.entry, value.as_ref(), len)
-            .map(|r| r.unwrap())
-    }
-
-    /// Insert the value into the vacant entry using the trait-based API
-    /// Returns the raw bytes since we can't return borrowed decoded value from a consuming method
     pub fn insert(
         self,
         value: &'a <V as BytesEncode<'a>>::EItem,
     ) -> Result<<V as BytesDecode<'a>>::DItem> {
+        // Get old position and copy key bytes before mutation
+        let old_pos = self.entry.pos();
+        let hash = self.hash;
+        let slot_idx = self.slot_idx;
+
+        // Copy key bytes to avoid borrow conflicts
+        let key_bytes_copy: Vec<u8> = {
+            let kv_bytes = self.kv_bytes();
+            let (key_bytes, _) = KVPair::<K, V>::get_key_bytes(kv_bytes)?;
+            key_bytes.to_vec()
+        };
+
+        // Encode value
         let (value_len, value_bytes) = V::bytes_encode(value)?;
-        self.insert_bytes(value_len, value_bytes.as_ref())
+
+        // Build new KV bytes manually: [hash][key_bytes][value]
+        let value_stored_size = if value_len.is_some() {
+            std::mem::size_of::<usize>() + value_bytes.len()
+        } else {
+            value_bytes.len()
+        };
+
+        let total_size = KVPair::<K, V>::HASH_SIZE + key_bytes_copy.len() + value_stored_size;
+        let mut new_kv_bytes = vec![0u8; total_size];
+
+        // Write hash
+        new_kv_bytes[0..KVPair::<K, V>::HASH_SIZE].copy_from_slice(&hash.to_le_bytes());
+        let mut offset = KVPair::<K, V>::HASH_SIZE;
+
+        // Write key (already has length prefix if needed)
+        new_kv_bytes[offset..offset + key_bytes_copy.len()].copy_from_slice(&key_bytes_copy);
+        offset += key_bytes_copy.len();
+
+        // Write value
+        if let Some(len) = value_len {
+            new_kv_bytes[offset..offset + std::mem::size_of::<usize>()]
+                .copy_from_slice(&len.to_le_bytes());
+            offset += std::mem::size_of::<usize>();
+        }
+        new_kv_bytes[offset..offset + value_bytes.len()].copy_from_slice(&value_bytes);
+
+        // Store in heap and get position
+        let kv_idx = {
+            let mut page = self.map.heap.next_free_page(new_kv_bytes.len());
+            page.write(&new_kv_bytes)?;
+            page.flush()?;
+            page.pos()
+        };
+
+        // Convert HeapIdx to u64 for storage in Entry (48-bit pos)
+        let pos = kv_idx.as_u64();
+
+        let mut entries_state = *(self.map.entries_state());
+        let entries_size_category = self.map.entries_size_category;
+        let DiskHashMap { heap, entries, .. } = self.map;
+
+        let new_entry = Entry::occupied_at(pos, hash);
+        // Use update_entry instead of set_entry for direct overwrite (no probing)
+        entries.update_entry(slot_idx, new_entry, &mut entries_state, |entry| {
+            let kv_bytes = {
+                let pos = entry.pos();
+                let heap_idx = HeapIdx::from_u64(pos);
+                heap.get(heap_idx)
+                    .expect("kv data must exist for occupied entry")
+            };
+            KVPair::<K, V>::decode_hash(kv_bytes) as usize
+        });
+        // Update the entries state in the heap
+        *DiskHashMap::<K, V, BS, S>::entries_state_mut(heap, entries_size_category as u8) =
+            entries_state;
+
+        // Decode old value from old position (still in heap)
+        let old_heap_idx = HeapIdx::from_u64(old_pos);
+        let old_kv_bytes = heap.get(old_heap_idx).expect("old kv data must exist");
+        let (_, key_end) = KVPair::<K, V>::decode_key(old_kv_bytes)?;
+        let (old_value, _) = KVPair::<K, V>::decode_value(old_kv_bytes, key_end)?;
+
+        Ok(old_value)
     }
 
     /// Insert the value into the vacant entry using trait-based API if vacant
@@ -890,41 +926,92 @@ where
     K: for<'b> BytesEncode<'b> + for<'b> BytesDecode<'b>,
     V: for<'b> BytesEncode<'b> + for<'b> BytesDecode<'b>,
 {
-    /// Insert the value into the vacant entry, returning a reference to the inserted value
-    fn insert_bytes<V2: AsRef<[u8]>>(self, len: Option<usize>, value: V2) -> Result<&'a [u8]> {
-        let entry = self.map.insert_new_entry(
-            self.slot_idx,
-            &self.key,
-            self.key_len,
-            value.as_ref(),
-            len,
-        )?;
-        Ok(self
-            .map
-            .heap
-            .get(entry.value_pos())
-            .expect("value was just inserted"))
-    }
-}
-
-// Trait-based extensions for VacantEntry
-impl<'a, K, V, BS, S> VacantEntry<'a, K, V, BS, S>
-where
-    BS: ByteStore,
-    S: BuildHasher + Default,
-    K: for<'b> BytesEncode<'b> + for<'b> BytesDecode<'b>,
-    V: for<'b> BytesEncode<'b> + for<'b> BytesDecode<'b>,
-    Heap<BS>: HeapOps<BS>,
-{
     /// Insert the value into the vacant entry using the trait-based API
-    /// Returns the raw bytes since we can't return borrowed decoded value from a consuming method
     pub fn insert(
         self,
         value: &'a <V as BytesEncode<'a>>::EItem,
     ) -> Result<<V as BytesDecode<'a>>::DItem> {
+        let hash = self.hash;
+        let slot_idx = self.slot_idx;
+
+        // Encode value
         let (value_len, value_bytes) = V::bytes_encode(value)?;
-        let old_bytes = self.insert_bytes(value_len, value_bytes.as_ref())?;
-        V::bytes_decode(old_bytes)
+
+        // Build KV bytes manually: [hash][key_bytes][value]
+        // Note: self.key already has the key bytes (with length prefix if needed)
+        let value_stored_size = if value_len.is_some() {
+            std::mem::size_of::<usize>() + value_bytes.len()
+        } else {
+            value_bytes.len()
+        };
+
+        let key_stored_size = if self.key_len.is_some() {
+            std::mem::size_of::<usize>() + self.key.len()
+        } else {
+            self.key.len()
+        };
+
+        let total_size = KVPair::<K, V>::HASH_SIZE + key_stored_size + value_stored_size;
+        let mut kv_bytes = vec![0u8; total_size];
+
+        // Write hash
+        kv_bytes[0..KVPair::<K, V>::HASH_SIZE].copy_from_slice(&hash.to_le_bytes());
+        let mut offset = KVPair::<K, V>::HASH_SIZE;
+
+        // Write key (with length prefix if needed)
+        if let Some(len) = self.key_len {
+            kv_bytes[offset..offset + std::mem::size_of::<usize>()]
+                .copy_from_slice(&len.to_le_bytes());
+            offset += std::mem::size_of::<usize>();
+        }
+        kv_bytes[offset..offset + self.key.len()].copy_from_slice(&self.key);
+        offset += self.key.len();
+
+        // Write value (with length prefix if needed)
+        if let Some(len) = value_len {
+            kv_bytes[offset..offset + std::mem::size_of::<usize>()]
+                .copy_from_slice(&len.to_le_bytes());
+            offset += std::mem::size_of::<usize>();
+        }
+        kv_bytes[offset..offset + value_bytes.len()].copy_from_slice(&value_bytes);
+
+        // Store in heap and get position
+        let kv_idx = {
+            let mut page = self.map.heap.next_free_page(kv_bytes.len());
+            page.write(&kv_bytes)?;
+            page.flush()?;
+            page.pos()
+        };
+
+        // Convert HeapIdx to u64 for storage in Entry (48-bit pos)
+        let pos = kv_idx.as_u64();
+
+        let mut entries_state = *(self.map.entries_state());
+        let entries_size_category = self.map.entries_size_category;
+        let DiskHashMap { entries, heap, .. } = self.map;
+
+        let entry = Entry::occupied_at(pos, hash);
+        entries.set_entry(slot_idx, entry, &mut entries_state, |entry| {
+            let kv_bytes = {
+                let pos = entry.pos();
+                let heap_idx = HeapIdx::from_u64(pos);
+                heap.get(heap_idx)
+                    .expect("kv data must exist for occupied entry")
+            };
+            KVPair::<K, V>::decode_hash(kv_bytes) as usize
+        });
+
+        entries_state.occupied_count += 1;
+        // Update the entries state in the heap
+        *DiskHashMap::<K, V, BS, S>::entries_state_mut(heap, entries_size_category as u8) =
+            entries_state;
+        self.map.size += 1;
+
+        // Get the value from the heap we just wrote to
+        let kv_data = heap.get(kv_idx).expect("just wrote this kv data");
+        let (_, key_end) = KVPair::<K, V>::decode_key(kv_data)?;
+        let (value, _) = KVPair::<K, V>::decode_value(kv_data, key_end)?;
+        Ok(value)
     }
 
     /// Insert the value into the vacant entry using trait-based API if vacant
@@ -1264,13 +1351,13 @@ mod tests {
     }
 
     proptest! {
-        #![proptest_config(ProptestConfig::with_cases(5))]
+        // #![proptest_config(ProptestConfig::with_cases(10)]
         #[test]
         fn it_s_a_hash_disk_map(
                 small_hash_map_prop in proptest::collection::hash_map(
                     proptest::collection::vec(0u8..255, 1..32),
                     proptest::collection::vec(0u8..255, 1..32),
-                    10..5000,
+                    10..500,
 
             )){ check_prop(small_hash_map_prop); }
     }
@@ -1463,60 +1550,6 @@ mod tests {
             assert_eq!(map.get(b"key3").unwrap(), Some(b"value3".as_ref()));
         }
     }
-
-    // #[test]
-    // fn test_no_resize_with_preallocation() {
-    //     let mut entry_store = VecStore::new();
-    //     entry_store.grow(256 * std::mem::size_of::<Entry>());
-    //     let mut key_store = VecStore::new();
-    //     key_store.grow(20 * 1024);
-    //     let mut value_store = VecStore::new();
-    //     value_store.grow(20 * 1024);
-
-    //     // The stores have been resized once to pre-allocate space.
-    //     assert_eq!(entry_store.stats(), 1);
-    //     assert_eq!(key_store.stats(), 1);
-    //     assert_eq!(value_store.stats(), 1);
-
-    //     let mut map: DiskHashMap<Bytes, Bytes, _, FxBuildHasher> =
-    //         DiskHashMap::with_stores(entry_store, key_store, value_store);
-
-    //     let initial_stats = map.stats();
-    //     assert_eq!(initial_stats, (1, 1, 1));
-
-    //     // Insert 100 elements. Should not trigger any more resizes.
-    //     for i in 0..100 {
-    //         let s = i.to_string();
-    //         map.insert(s.clone().into_bytes().as_slice(), s.into_bytes().as_slice())
-    //             .unwrap();
-    //     }
-    //     assert_eq!(
-    //         map.stats(),
-    //         initial_stats,
-    //         "No resize should happen with pre-allocation"
-    //     );
-
-    //     // Insert more elements to trigger a resize of the entries container.
-    //     for i in 100..150 {
-    //         let s = i.to_string();
-    //         map.insert(s.clone().into_bytes().as_slice(), s.into_bytes().as_slice())
-    //             .unwrap();
-    //     }
-
-    //     let (entries_resizes, keys_resizes, values_resizes) = map.stats();
-    //     assert_eq!(
-    //         entries_resizes, 0,
-    //         "entries store is replaced, so stats are reset"
-    //     );
-    //     assert_eq!(
-    //         keys_resizes, initial_stats.1,
-    //         "keys store should not resize"
-    //     );
-    //     assert_eq!(
-    //         values_resizes, initial_stats.2,
-    //         "values store should not resize"
-    //     );
-    // }
 
     #[test]
     fn test_entry_api_vacant() {

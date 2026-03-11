@@ -53,4 +53,4 @@ pub use disk_map::{
 };
 pub use error::{DiskMapError, Result};
 pub use heap::{Heap, HeapIdx, Slab};
-pub use types::{Bytes, BytesDecode, BytesEncode, Native, Str};
+pub use types::{Bytes, BytesDecode, BytesEncode, KVPair, Native, Str};

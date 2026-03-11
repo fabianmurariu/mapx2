@@ -19,6 +19,7 @@ use clap::{Parser, Subcommand};
 use diskdashmap::DiskDashMap;
 use diskhashmap::MMapFile;
 use diskhashmap::types::Native;
+use indicatif::ProgressIterator;
 use parquet::file::reader::{FileReader, SerializedFileReader};
 use parquet::record::RowAccessor;
 use rustc_hash::FxBuildHasher;
@@ -76,6 +77,12 @@ fn validate_map(
 
     let file = File::open(parquet_file)?;
     let reader = SerializedFileReader::new(file)?;
+    let num_rows: u64 = reader
+        .metadata()
+        .row_groups()
+        .iter()
+        .map(|rg| rg.num_rows() as u64)
+        .sum();
     let mut row_iter = reader.get_row_iter(None)?;
 
     let mut validated = 0;
@@ -83,15 +90,14 @@ fn validate_map(
     let mut missing = 0;
     let mut row_num = 0u64;
 
-    loop {
-        let record = match row_iter.next() {
-            Some(Ok(rec)) => rec,
-            Some(Err(e)) => {
+    for record in row_iter.progress_count(num_rows) {
+        let record = match record {
+            Ok(rec) => rec,
+            Err(e) => {
                 eprintln!("Validation: Error reading row {}: {}", row_num, e);
                 row_num += 1;
                 continue;
             }
-            None => break,
         };
 
         let id_value = match record.get_long(id_col_idx) {
@@ -126,10 +132,6 @@ fn validate_map(
         }
 
         row_num += 1;
-
-        if row_num % 100000 == 0 {
-            println!("Validated {} rows...", row_num);
-        }
     }
 
     let validate_duration = validate_start.elapsed();
@@ -312,10 +314,7 @@ fn cmd_load(
     Ok(())
 }
 
-fn cmd_check(
-    parquet_file: PathBuf,
-    map_dir: PathBuf,
-) -> Result<(), Box<dyn std::error::Error>> {
+fn cmd_check(parquet_file: PathBuf, map_dir: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Check Command ===");
     println!("Parquet file: {:?}", parquet_file);
     println!("Map directory: {:?}", map_dir);

@@ -160,9 +160,12 @@ where
         slots_per_slab: usize,
         max_size: Option<usize>,
     ) -> io::Result<Self> {
-        Self::with_hasher_and_shards_in(dir.as_ref(), FxBuildHasher, default_shard_amount(), |path| {
-            DiskHashMap::with_capacity(path, num_entries, slots_per_slab, max_size)
-        })
+        Self::with_hasher_and_shards_in(
+            dir.as_ref(),
+            FxBuildHasher,
+            default_shard_amount(),
+            |path| DiskHashMap::with_capacity(path, num_entries, slots_per_slab, max_size),
+        )
     }
 }
 

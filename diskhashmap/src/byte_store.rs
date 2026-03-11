@@ -18,9 +18,13 @@ pub trait ByteStore: AsRef<[u8]> + AsMut<[u8]> {
     fn purge(self);
 }
 
+/// VecStore uses aligned storage (8-byte aligned) to ensure compatibility
+/// with types like Entry that require proper alignment.
 #[derive(Debug, Clone, Default)]
 pub struct VecStore {
-    vec: Vec<u8>,
+    // Use Vec<u64> for 8-byte alignment, but expose as bytes
+    vec: Vec<u64>,
+    len_bytes: usize,
     resizes: u64,
 }
 
@@ -30,8 +34,11 @@ impl VecStore {
     }
 
     pub fn with_capacity(capacity: usize) -> Self {
+        // Round up to nearest multiple of 8
+        let u64_count = (capacity + 7) / 8;
         Self {
-            vec: Vec::with_capacity(capacity),
+            vec: Vec::with_capacity(u64_count),
+            len_bytes: 0,
             resizes: 0,
         }
     }
@@ -39,26 +46,35 @@ impl VecStore {
 
 impl AsRef<[u8]> for VecStore {
     fn as_ref(&self) -> &[u8] {
-        &self.vec
+        // Safe because u64 is properly aligned for u8
+        let bytes: &[u8] = bytemuck::cast_slice(&self.vec);
+        &bytes[..self.len_bytes]
     }
 }
 
 impl AsMut<[u8]> for VecStore {
     fn as_mut(&mut self) -> &mut [u8] {
-        &mut self.vec
+        // Safe because u64 is properly aligned for u8
+        let bytes: &mut [u8] = bytemuck::cast_slice_mut(&mut self.vec);
+        &mut bytes[..self.len_bytes]
     }
 }
 
 impl ByteStore for VecStore {
     fn grow(&mut self, additional: usize) {
         self.resizes += 1;
-        self.vec.resize(self.vec.len() + additional, 0);
+        let new_len_bytes = self.len_bytes + additional;
+        let u64_count = (new_len_bytes + 7) / 8;
+        self.vec.resize(u64_count, 0);
+        self.len_bytes = new_len_bytes;
     }
 
     fn grow_new_empty(&self, additional: usize) -> Self {
-        let len = (self.vec.len() + additional).next_power_of_two();
+        let len = (self.len_bytes + additional).next_power_of_two();
+        let u64_count = (len + 7) / 8;
         Self {
-            vec: vec![0u8; len],
+            vec: vec![0u64; u64_count],
+            len_bytes: len,
             resizes: 0,
         }
     }

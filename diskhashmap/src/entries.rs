@@ -1,9 +1,9 @@
-use bytemuck::{Pod, Zeroable};
-use either::Either;
 use crate::ByteStore;
 use crate::entry::Entry;
 use crate::error::Result;
 use crate::fixed_buffers::FixedVec;
+use bytemuck::{Pod, Zeroable};
+use either::Either;
 
 #[derive(Debug, Clone, Copy)]
 #[repr(transparent)]
@@ -49,7 +49,6 @@ mod slot_idx_test {
 #[cfg(test)]
 mod double_array_entries_tests {
     use super::*;
-    use crate::HeapIdx;
     use crate::byte_store::VecStore;
     use crate::entry::Entry;
 
@@ -60,10 +59,9 @@ mod double_array_entries_tests {
         store
     }
 
-    fn create_test_entry(k_pos: u64, v_pos: u64) -> Entry {
-        let k_pos = HeapIdx::new().with_category(0).with_offset(k_pos);
-        let v_pos = HeapIdx::new().with_category(0).with_offset(v_pos);
-        Entry::occupied_at_pos(k_pos, v_pos)
+    fn create_test_entry(pos: u64) -> Entry {
+        // Use pos as both the position and hash for testing
+        Entry::occupied_at(pos, pos)
     }
 
     // fn create_deleted_entry() -> Entry {
@@ -103,10 +101,6 @@ mod double_array_entries_tests {
         assert_eq!(double_entries.new_entries.capacity(), 16);
     }
 
-    fn heap_idx(v: u64) -> HeapIdx {
-        HeapIdx::new().with_category(0).with_offset(v)
-    }
-
     #[test]
     fn test_basic_entry_operations_vec_store() {
         let store = create_vec_store(16);
@@ -118,7 +112,7 @@ mod double_array_entries_tests {
             occupied_count: 0,
         };
 
-        let entry = create_test_entry(100, 200);
+        let entry = create_test_entry(100);
         let index = SlotIdx::new(5);
 
         double_entries.set_entry(index, entry, &mut state, |_| 0);
@@ -126,8 +120,7 @@ mod double_array_entries_tests {
 
         let retrieved = double_entries.get_entry(index);
         assert!(retrieved.is_some());
-        assert_eq!(retrieved.unwrap().key_pos(), heap_idx(100));
-        assert_eq!(retrieved.unwrap().value_pos(), heap_idx(200));
+        assert_eq!(retrieved.unwrap().pos(), 100);
     }
 
     #[test]
@@ -144,7 +137,7 @@ mod double_array_entries_tests {
         };
 
         for i in 0..4 {
-            let entry = create_test_entry(i * 10, i * 20);
+            let entry = create_test_entry(i * 10);
             double_entries.set_entry(SlotIdx::new(i as usize), entry, &mut state, |_| 0);
             state.occupied_count += 1;
         }
@@ -173,8 +166,8 @@ mod double_array_entries_tests {
         };
         for hash in fixtures.iter() {
             let slot = SlotIdx::new(*hash as usize % capacity);
-            entries.set_entry(slot, create_test_entry(*hash, *hash), &mut state, |e| {
-                e.key_pos().offset() as usize
+            entries.set_entry(slot, create_test_entry(*hash), &mut state, |e| {
+                e.pos() as usize
             });
             state.occupied_count += 1;
             if state.occupied_count as usize > capacity / 2 {
@@ -185,7 +178,7 @@ mod double_array_entries_tests {
             let found = new
                 .filter(|(_, e)| !e.is_empty())
                 .chain(old.filter(|(_, e)| !e.is_empty()))
-                .find(|(_, e)| e.key_pos().offset() == *hash);
+                .find(|(_, e)| e.pos() == *hash);
             assert!(
                 found.is_some(),
                 "Should find entry for hash {} in\n{entries:?}",
@@ -352,19 +345,20 @@ impl<BS: ByteStore> DoubleArrayEntries<BS> {
         #[inline(always)]
         fn insert_into_entries(items: &mut [Entry], index: SlotIdx, entry: Entry) {
             let len = items.len();
-            let mut pos = index.value();
+            let mut slot_pos = index.value();
 
             // Fast path - check direct slot first
-            let slot = &mut items[pos];
-            if slot.is_empty() || slot.is_deleted() || slot.key_pos() == entry.key_pos() {
+            let slot = &mut items[slot_pos];
+            // Only insert into empty or deleted slots
+            if slot.is_empty() || slot.is_deleted() {
                 *slot = entry;
                 return;
             }
 
             // Linear probing with manual wrapping
             for _ in 1..len {
-                pos = (pos + 1) % len;
-                let slot = &mut items[pos];
+                slot_pos = (slot_pos + 1) % len;
+                let slot = &mut items[slot_pos];
                 if slot.is_empty() || slot.is_deleted() {
                     *slot = entry;
                     return;
@@ -421,6 +415,70 @@ impl<BS: ByteStore> DoubleArrayEntries<BS> {
         }
     }
 
+    /// Directly update an entry at the given index without probing.
+    /// Use this for updating existing entries where the slot is already known.
+    /// Also performs incremental rehashing if a resize is in progress.
+    pub(crate) fn update_entry(
+        &mut self,
+        index: SlotIdx,
+        entry: Entry,
+        state: &mut EntriesState,
+        reindex_callback: impl Fn(&Entry) -> usize,
+    ) {
+        // Direct overwrite at the known slot
+        if !index.is_old() {
+            self.new_entries.as_mut()[index.value()] = entry;
+        } else {
+            if let Some(old) = self.old_entries.as_mut() {
+                old.as_mut()[index.value()] = entry;
+            }
+        }
+
+        // Incremental rehashing - same as set_entry
+        if state.reindex_offset >= 0 {
+            let items = self.new_entries.as_mut();
+            if let Some(old_items) = self.old_entries.as_mut() {
+                let old_slice = old_items.as_mut();
+                let start = state.reindex_offset as usize;
+                let end = (start + state.reindex_batch as usize).min(old_slice.len());
+                let done = end == old_slice.len();
+
+                // Rehash a batch of entries
+                for i in start..end {
+                    let old_entry = &mut old_slice[i];
+                    if old_entry.is_occupied() && !old_entry.is_moved() {
+                        let new_hash = reindex_callback(old_entry);
+                        let new_index = new_hash % items.len();
+                        // Use inline insert logic
+                        let len = items.len();
+                        let mut slot_pos = new_index;
+                        loop {
+                            let slot = &mut items[slot_pos];
+                            if slot.is_empty() || slot.is_deleted() {
+                                *slot = *old_entry;
+                                break;
+                            }
+                            slot_pos = (slot_pos + 1) % len;
+                        }
+                        old_entry.mark_as_moved();
+                    }
+                }
+
+                state.reindex_offset = if done {
+                    -1
+                } else {
+                    state.reindex_offset + (end - start) as i64
+                };
+
+                if done {
+                    if let Some(old_entries) = self.old_entries.take() {
+                        old_entries.purge();
+                    }
+                }
+            }
+        }
+    }
+
     pub(crate) fn find_entry(
         &self,
         hash: usize,
@@ -446,24 +504,28 @@ impl<BS: ByteStore> DoubleArrayEntries<BS> {
                 let reindex_offset = state.reindex_offset as usize;
                 if index_old >= reindex_offset {
                     // Start from index_old and wrap around, but only visit entries >= reindex_offset
-                    Either::Left(old_entries.as_ref()[index_old..]
-                        .iter()
-                        .enumerate()
-                        .map(move |(pos, entry)| (pos + index_old, entry))
-                        .chain(
-                            old_entries.as_ref()[reindex_offset..index_old]
-                                .iter()
-                                .enumerate()
-                                .map(move |(pos, entry)| (pos + reindex_offset, entry)),
-                        )
-                        .map(|(pos, entry)| (SlotIdx::old(pos), entry)))
+                    Either::Left(
+                        old_entries.as_ref()[index_old..]
+                            .iter()
+                            .enumerate()
+                            .map(move |(pos, entry)| (pos + index_old, entry))
+                            .chain(
+                                old_entries.as_ref()[reindex_offset..index_old]
+                                    .iter()
+                                    .enumerate()
+                                    .map(move |(pos, entry)| (pos + reindex_offset, entry)),
+                            )
+                            .map(|(pos, entry)| (SlotIdx::old(pos), entry)),
+                    )
                 } else {
                     // index_old < reindex_offset, so start from reindex_offset
-                    Either::Right(old_entries.as_ref()[reindex_offset..]
-                        .iter()
-                        .enumerate()
-                        .map(move |(pos, entry)| (pos + reindex_offset, entry))
-                        .map(|(pos, entry)| (SlotIdx::old(pos), entry)))
+                    Either::Right(
+                        old_entries.as_ref()[reindex_offset..]
+                            .iter()
+                            .enumerate()
+                            .map(move |(pos, entry)| (pos + reindex_offset, entry))
+                            .map(|(pos, entry)| (SlotIdx::old(pos), entry)),
+                    )
                 }
             })
             .into_iter();
