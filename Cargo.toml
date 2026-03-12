@@ -3,7 +3,7 @@ members = ["diskhashmap", "diskdashmap", "locked_iter"]
 resolver = "3"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.17.0"
 edition = "2024"
 license = "Apache-2.0"
 authors = ["Fabian Murariu <fabian.murariu@gmail.com>"]
