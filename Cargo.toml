@@ -24,7 +24,7 @@ exclude = ["proptest-regressions/"]
 [workspace.dependencies]
 either = "1.15.0"
 crossbeam-utils = "0.8.21"
-rkyv = "0.8.11"
+rkyv = "0.8.12"
 proptest = "1.7.0"
 proptest-derive = "0.6.0"
 memmap2 = "0.9.7"
